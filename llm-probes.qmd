@@ -5,6 +5,7 @@ author: ""
 date: today
 format:
   revealjs:
+    output-file: index.html
     theme: [default, custom.scss]
     slide-number: true
     transition: slide
