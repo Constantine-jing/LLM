@@ -1,7 +1,7 @@
 ---
 title: "LLM Probes"
 subtitle: "Understanding What Neural Networks Learn Through Linear Probing"
-author: ""
+author: "Mengyan Jing & Abhishek Banerjee"
 date: today
 format:
   revealjs:
@@ -56,7 +56,11 @@ jupyter: python3
 ::::
 
 
-# Part 1: Foundations {background-color="#1E2761"}
+## {.section-divider data-background-color="#1E2761"}
+
+::: {.divider-text}
+Part 1: Foundations
+:::
 
 ## What is a "Probe"? {.smaller}
 
@@ -222,7 +226,11 @@ Layers 64–127: doing all the work
 ::::
 
 
-# Part 2: Promises & Pitfalls {background-color="#1E2761"}
+## {.section-divider data-background-color="#1E2761"}
+
+::: {.divider-text}
+Part 2: Promises & Pitfalls
+:::
 
 
 ## Belinkov (2022): A Critical Review {.smaller}
@@ -364,7 +372,11 @@ flowchart TD
 :::
 
 
-# Part 3: Modern Applications {background-color="#1E2761"}
+## {.section-divider data-background-color="#1E2761"}
+
+::: {.divider-text}
+Part 3: Modern Applications
+:::
 
 
 ## Gurnee & Tegmark (2024): Space & Time in LLMs {.smaller}
@@ -567,7 +579,11 @@ DINOv3 (Siméoni et al., 2025) — a self-supervised vision foundation model —
 ::::
 
 
-# Part 4: Tutorial & Project {background-color="#1E2761"}
+## {.section-divider data-background-color="#1E2761"}
+
+::: {.divider-text}
+Part 4: Tutorial & Project
+:::
 
 
 ## Tutorial: Building a Linear Probe {.smaller}
@@ -744,10 +760,10 @@ A_reduced = pca.fit_transform(A_train)
 - Elazar, Y. et al. (2021). *Amnesic probing: Behavioral explanation with amnesic counterfactuals.* TACL.
 - Giulianelli, M. et al. (2018). *Under the hood: Using diagnostic classifiers to investigate and improve how language models track agreement information.* EMNLP.
 
-## {background-color="#1E2761"}
+## {.section-divider data-background-color="#1E2761"}
 
-:::{.r-fit-text}
+::: {.divider-text}
 Thank You!
-:::
 
 Questions?
+:::

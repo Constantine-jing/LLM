@@ -10,7 +10,7 @@ $code-block-font-size: 0.7em;
 
 /*-- scss:rules --*/
 
-.reveal .slide-background-content {
+.reveal .slides section:not(.section-divider) {
   background-color: #FAFBFF;
 }
 
@@ -68,11 +68,27 @@ $code-block-font-size: 0.7em;
   border-left-color: #065A82;
 }
 
-.reveal section[data-background-color="#1E2761"] h1,
-.reveal section[data-background-color="#1E2761"] h2,
-.reveal section[data-background-color="#1E2761"] p {
-  color: white !important;
-  border-bottom: none;
+.reveal .section-divider {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.reveal .section-divider h2 {
+  display: none !important;
+}
+
+.reveal .divider-text {
+  color: #FFFFFF !important;
+  font-family: "Georgia", serif;
+  font-size: 2.2em;
+  font-weight: bold;
+  text-align: center;
+}
+
+.reveal .divider-text p {
+  color: #FFFFFF !important;
+  margin: 0.2em 0;
 }
 
 .reveal .columns {
