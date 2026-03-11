@@ -1,0 +1,114 @@
+/*-- scss:defaults --*/
+
+$font-family-sans-serif: "Segoe UI", Calibri, sans-serif;
+$presentation-heading-font: "Georgia", serif;
+$presentation-heading-color: #1E2761;
+$body-color: #2d2d2d;
+$link-color: #065A82;
+$code-block-bg: #1e1e2e;
+$code-block-font-size: 0.7em;
+
+/*-- scss:rules --*/
+
+.reveal .slide-background-content {
+  background-color: #FAFBFF;
+}
+
+.reveal h1 {
+  font-size: 1.8em;
+  color: #1E2761;
+}
+
+.reveal h2 {
+  font-size: 1.4em;
+  color: #1E2761;
+  border-bottom: 3px solid #F96167;
+  padding-bottom: 0.2em;
+  margin-bottom: 0.5em;
+}
+
+.reveal .smaller {
+  font-size: 0.8em;
+}
+
+.reveal table {
+  font-size: 0.75em;
+  margin: 0.5em auto;
+}
+
+.reveal table th {
+  background-color: #1E2761;
+  color: white;
+  padding: 0.4em 0.8em;
+}
+
+.reveal table td {
+  padding: 0.3em 0.8em;
+  border-bottom: 1px solid #ddd;
+}
+
+.reveal table tr:nth-child(even) {
+  background-color: #f0f2f8;
+}
+
+.reveal .callout {
+  font-size: 0.8em;
+  margin-top: 0.5em;
+}
+
+.reveal .callout-important {
+  border-left-color: #F96167;
+}
+
+.reveal .callout-tip {
+  border-left-color: #2C5F2D;
+}
+
+.reveal .callout-note {
+  border-left-color: #065A82;
+}
+
+.reveal section[data-background-color="#1E2761"] h1,
+.reveal section[data-background-color="#1E2761"] h2,
+.reveal section[data-background-color="#1E2761"] p {
+  color: white !important;
+  border-bottom: none;
+}
+
+.reveal .columns {
+  gap: 1.5em;
+}
+
+.reveal code {
+  font-size: 0.85em;
+}
+
+.reveal .footer {
+  font-size: 0.5em;
+  color: #888;
+}
+
+.reveal .r-fit-text {
+  color: white;
+}
+
+/* Mermaid diagram styling */
+.reveal .mermaid svg {
+  max-height: 350px;
+}
+
+.reveal blockquote {
+  font-style: italic;
+  border-left: 4px solid #F96167;
+  padding-left: 1em;
+  color: #555;
+  font-size: 0.9em;
+}
+
+.reveal ul {
+  margin-top: 0.3em;
+}
+
+.reveal li {
+  margin-bottom: 0.2em;
+}

@@ -1,0 +1,752 @@
+---
+title: "LLM Probes"
+subtitle: "Understanding What Neural Networks Learn Through Linear Probing"
+author: ""
+date: today
+format:
+  revealjs:
+    theme: [default, custom.scss]
+    slide-number: true
+    transition: slide
+    width: 1280
+    height: 720
+    code-fold: true
+    code-tools: true
+    highlight-style: monokai
+    fig-align: center
+    footer: "LLM Probes — Lecture Presentation"
+jupyter: python3
+---
+
+## Outline {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Part 1: Foundations**
+
+1. What are LLM Probes?
+2. The Alain & Bengio (2016) Framework
+3. How Linear Probes Work
+4. Key Findings: Monotonic Separability
+
+**Part 2: Probing Classifiers — Promises & Pitfalls**
+
+5. The Belinkov (2022) Survey
+6. Methodological Concerns
+7. Controls, Baselines & Metrics
+:::
+
+::: {.column width="50%"}
+**Part 3: Modern Applications**
+
+8. Gurnee & Tegmark (2024) — Space & Time
+9. Linear Representations in LLMs
+10. Space & Time Neurons
+11. Beyond NLP: Vision Probes (DINOv3)
+
+**Part 4: Practical & Project Connection**
+
+12. Tutorial: Building a Linear Probe
+13. Related Project: Probes for Generalization
+14. Summary & Discussion
+:::
+
+::::
+
+
+# Part 1: Foundations {background-color="#1E2761"}
+
+## What is a "Probe"? {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+A **probe** is a simple classifier (often linear) trained on the **intermediate representations** of a neural network to predict some property of interest.
+
+**Key idea:** Neural networks learn rich internal representations — probes let us *measure* what information is encoded at each layer.
+
+**Analogy from Alain & Bengio (2016):**
+
+> Think of probes as **thermometers** — they measure the temperature at different locations in the model without affecting the model itself.
+
+:::
+
+::: {.column width="45%"}
+
+```{mermaid}
+%%| fig-width: 5.5
+flowchart TD
+    X["Input X"] --> H0["Layer 0"]
+    H0 --> H1["Layer 1"]
+    H1 --> H2["..."]
+    H2 --> HK["Layer K"]
+    HK --> Y["Output Ŷ"]
+
+    H0 -.->|"stop grad"| P0["Probe 0"]
+    H1 -.->|"stop grad"| P1["Probe 1"]
+    HK -.->|"stop grad"| PK["Probe K"]
+
+    style P0 fill:#F96167,color:white
+    style P1 fill:#F96167,color:white
+    style PK fill:#F96167,color:white
+```
+
+:::
+
+::::
+
+::: {.callout-important}
+**Critical rule:** Probes must **never** influence the model's training — gradients are blocked (via `stop_gradient`).
+:::
+
+
+## Alain & Bengio (2016): The Original Paper {.smaller}
+
+:::: {.columns}
+
+::: {.column width="60%"}
+
+**"Understanding Intermediate Layers Using Linear Classifier Probes"**
+
+**Core contributions:**
+
+- Introduced probes as a general tool for understanding deep neural networks
+- Demonstrated probes on **Inception v3** and **ResNet-50** (ImageNet)
+- Discovered that **linear separability increases monotonically** through layers
+
+**The setup:**
+
+At each layer $k$, take features $h_k$ and fit a linear classifier:
+
+$$f_k: h_k \mapsto \text{softmax}(W h_k + b)$$
+
+Minimize cross-entropy loss. The probe parameters $(W, b)$ are trained **independently** from the model.
+
+:::
+
+::: {.column width="40%"}
+
+**Why linear?**
+
+- Training a linear classifier with softmax cross-entropy is a **convex** problem — no local minima
+- Linear probes reveal what is **directly accessible** in the representation
+- More complex probes risk learning features **not actually used** by the model
+
+:::
+
+::::
+
+
+## Key Finding: Monotonic Improvement {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+**ResNet-50 Results (ImageNet)**
+
+| Layer | Topology | Validation Error |
+|-------|----------|:---:|
+| input | (224,224,3) | 0.99 |
+| add_1 | (28,28,256) | 0.94 |
+| add_4 | (28,28,512) | 0.87 |
+| add_8 | (14,14,1024) | 0.77 |
+| add_13 | (14,14,1024) | 0.51 |
+| add_16 | (7,7,2048) | 0.31 |
+
+Error decreases **almost perfectly monotonically** as we go deeper.
+
+:::
+
+::: {.column width="50%"}
+
+**Why is this surprising?**
+
+- The Data Processing Inequality says **information can only decrease** through layers: $I(X;Z) \leq I(X;Y)$
+- Yet linear separability **increases**
+- This means networks are not about preserving information — they are about **distilling computationally useful representations**
+
+**Lesson:** Neural networks transform data into representations that are increasingly easy for simple classifiers to use, even though total information content may decrease.
+
+:::
+
+::::
+
+
+## Diagnosing Model Problems with Probes {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**Practical use case: finding "dead" segments**
+
+Alain & Bengio tested a pathologically deep model (128 layers) on MNIST with a **long skip connection** bypassing the first half.
+
+**What probes revealed:**
+
+- The model trained successfully (loss went down)
+- But probes showed that the **first 64 layers were completely unused** — no useful signal passed through them
+- The skip connection created a "dead segment"
+
+**Takeaway:** Loss minimization alone can hide architectural problems. Probes give us *internal visibility* into what each part of the model is actually doing.
+
+:::
+
+::: {.column width="45%"}
+
+```{mermaid}
+%%| fig-width: 5
+flowchart TD
+    X["Input X"] --> H0["Layer 0"]
+    H0 --> H1["Layer 1...63"]
+    H1 --> H64["Layer 64"]
+    H64 --> H65["Layer 65...127"]
+    H65 --> Y["Output Ŷ"]
+
+    X -->|"Skip Connection"| H64
+
+    style H1 fill:#ff6b6b,color:white
+    style H0 fill:#ff6b6b,color:white
+```
+
+Layers 0–63: **dead** (no useful signal)
+
+Layers 64–127: doing all the work
+
+:::
+
+::::
+
+
+# Part 2: Promises & Pitfalls {background-color="#1E2761"}
+
+
+## Belinkov (2022): A Critical Review {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**"Probing Classifiers: Promises, Shortcomings, and Advances"**
+
+The probing framework involves **many components** — choices matter:
+
+| Component | Description |
+|-----------|-------------|
+| $f$ | Original model (e.g., BERT, GPT) |
+| $D_O$ | Original training dataset |
+| $g$ | Probing classifier |
+| $D_P$ | Probing dataset with labels $z$ |
+| $\text{PERF}(g, f, D_O, D_P)$ | Probing performance |
+
+**Key insight:** Probing performance depends on ALL of these components and their interactions — not just on $f$.
+
+:::
+
+::: {.column width="45%"}
+
+**What good probing performance might mean:**
+
+- ✅ Property $z$ is **encoded** in representations
+- ✅ Information is **extractable** from representations
+- ⚠️ The model **uses** this information (not guaranteed!)
+- ❌ The model has **learned** the property (could be incidental)
+
+:::
+
+::::
+
+
+## Shortcoming 1: Comparisons & Controls {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+**Problem:** If a probe gets 87.8% accuracy, is that high? Compared to what?
+
+**Baselines ($\underline{f}$):**
+
+- Majority class baseline
+- Random embeddings baseline
+- Even **random features** can encode surprisingly much information!
+
+**Skylines ($\bar{f}$):**
+
+- Human performance
+- State-of-the-art dedicated models
+- Dedicated model trained on $x \rightarrow z$ directly
+
+:::
+
+::: {.column width="50%"}
+
+**Hewitt & Liang (2019) — Control Tasks:**
+
+Probe may be **memorizing** rather than extracting real information.
+
+**Solution:** Randomize labels → create $D_{P,\text{Rand}}$
+
+$$\text{Selectivity} = \text{PERF}(g, f, D_P) - \text{PERF}(g, f, D_{P,\text{Rand}})$$
+
+**Key finding:**
+
+- Linear probes → **high selectivity** ✅
+- Nonlinear probes → **low selectivity** (memorization!) ❌
+
+This is one reason the field prefers **linear probes**.
+
+:::
+
+::::
+
+
+## Shortcoming 2: Correlation ≠ Causation {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**The fundamental limitation:**
+
+A probe tells us information **exists** in a representation — but does the model actually **use** it?
+
+**Evidence of disconnect:**
+
+- Vanmassenhove et al. (2017): mismatch between probe performance and model performance
+- Elazar et al. (2021): removing probed features often does NOT hurt original task performance
+
+**Causal approaches (interventions):**
+
+- Giulianelli et al. (2018): modify representations using probe gradients → measure effect on original task
+- Feder et al. (2021): adversarial removal of features $z$ while controlling for confounders
+
+:::
+
+::: {.column width="45%"}
+
+```{mermaid}
+%%| fig-width: 5
+flowchart TD
+    A["High Probe\nAccuracy"] -->|"Correlation"| B["Property z is\nin representation"]
+    B -->|"?"| C["Model uses z\nfor predictions"]
+    
+    D["Intervention\nStudies"] -->|"Causal"| C
+    
+    style A fill:#2C5F2D,color:white
+    style B fill:#97BC62,color:white
+    style C fill:#F96167,color:white
+    style D fill:#1E2761,color:white
+```
+
+**Bottom line:** Probes establish *correlation*. Causal claims require *interventions*.
+
+:::
+
+::::
+
+
+## Shortcoming 3: Which Classifier? {.smaller}
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Linear probe** | Convex, high selectivity, reveals what's "directly readable" | May underestimate encoded information |
+| **MLP probe** | Can find more complex patterns | Low selectivity, risks memorization |
+| **MDL-based** (Voita & Titov 2020) | Measures both performance AND complexity | More complex to implement |
+| **Parameter-free** (attention-based) | Avoids learning new parameters entirely | Limited to what attention reveals |
+
+::: {.callout-tip}
+**Practical recommendation:** Use **linear probes** as the default. If you need to argue a property is truly represented, supplement with control tasks and selectivity metrics.
+:::
+
+
+# Part 3: Modern Applications {background-color="#1E2761"}
+
+
+## Gurnee & Tegmark (2024): Space & Time in LLMs {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**"Language Models Represent Space and Time"** (ICLR 2024)
+
+**Key question:** Do LLMs just learn superficial statistics, or do they build coherent *world models*?
+
+**Approach:** Use linear probes on **Llama-2** (7B, 13B, 70B) to predict:
+
+- **Spatial coordinates** (latitude/longitude) of places
+- **Temporal coordinates** (dates) of events
+
+**Six datasets spanning multiple scales:**
+
+| Spatial | Temporal |
+|---------|----------|
+| World places (39K) | Historical figures (37K) |
+| US places (29K) | Art & entertainment (31K) |
+| NYC places (19K) | News headlines (28K) |
+
+:::
+
+::: {.column width="45%"}
+
+**Probe formulation:**
+
+Linear ridge regression:
+
+$$\hat{W} = \arg\min_W \|Y - AW\|^2_2 + \lambda\|W\|^2_2$$
+
+where $A \in \mathbb{R}^{n \times d_\text{model}}$ are activations and $Y$ contains spatial or temporal coordinates.
+
+Closed-form solution:
+
+$$\hat{W} = (A^T A + \lambda I)^{-1} A^T Y$$
+
+:::
+
+::::
+
+
+## Results: LLMs Build Maps of the World {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+**Main findings from Figure 2 of the paper:**
+
+- Spatial & temporal features are **linearly recoverable** from LLM activations
+- Representation quality **increases through the first half** of layers, then plateaus
+- **Larger models** produce better representations (70B >> 13B >> 7B)
+- Gap between Llama-2 and Pythia likely due to training corpus size (2T vs 300B tokens)
+
+**Nonlinear probes (MLP) show minimal improvement** over linear probes → evidence that representations are truly **linear**.
+
+:::
+
+::: {.column width="50%"}
+
+**R² comparison (at 60% layer depth):**
+
+| Dataset | Linear | MLP |
+|---------|:------:|:---:|
+| World | 0.911 | 0.926 |
+| USA | 0.864 | 0.869 |
+| NYC | 0.359 | 0.312 |
+| Historical | 0.835 | 0.839 |
+| Entertainment | 0.885 | 0.884 |
+| Headlines | 0.746 | 0.739 |
+
+*(Llama-2-70B results)*
+
+The MLP barely improves — and sometimes does **worse** — strong evidence for the **linear representation hypothesis**.
+
+:::
+
+::::
+
+
+## Robustness: Generalization & Prompting {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+**Prompting sensitivity (§3.3):**
+
+- Explicit prompts ("What is the latitude of...") make **little difference**
+- **Random distractor tokens** significantly degrade performance
+- **Capitalizing** entity names also hurts (interferes with tokenization)
+- Probing on a **period token** after headlines improves results
+
+This suggests spatial/temporal features are encoded as part of **entity processing**, not triggered by specific questions.
+
+:::
+
+::: {.column width="50%"}
+
+**Block holdout generalization (§4.1):**
+
+Hold out entire countries/states/decades and test if probes generalize:
+
+| Dataset | Nominal Error | Held-Out Error |
+|---------|:---:|:---:|
+| World | 0.071 | 0.164 |
+| USA | 0.121 | 0.188 |
+| Historical | 0.115 | 0.119 |
+| Entertainment | 0.105 | 0.122 |
+
+*(Llama-2-70B, proximity error)*
+
+Performance degrades but remains **well above random** (0.5), suggesting the model truly represents spatial structure, not just category membership.
+
+:::
+
+::::
+
+
+## Space & Time Neurons (§5) {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**Finding individual neurons that encode coordinates:**
+
+1. Train linear probe → get probe direction vector
+2. Search for **individual neurons** whose weights have high cosine similarity with the probe direction
+3. Project activations onto these neuron weights
+
+**Results:** Individual neurons are **highly predictive** of spatial/temporal coordinates — they respond to space/time across all entity types.
+
+**Causal verification:**
+
+- Ablating these neurons degrades the model's spatial/temporal reasoning
+- These neurons emerged purely from **next-token prediction** — no explicit supervision
+
+:::
+
+::: {.column width="45%"}
+
+**Significance:**
+
+- Linear probes = **upper bound** on how well the model represents these features
+- Individual neurons = **lower bound** (features are typically distributed in superposition)
+- The fact that single neurons are this predictive is **strong evidence** the model truly uses these features
+
+::: {.callout-note}
+This connects to the broader **linear representation hypothesis**: features in neural networks are represented as directions in activation space.
+:::
+
+:::
+
+::::
+
+
+## Beyond NLP: Probes in Vision (DINOv3) {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**The probing idea extends to vision models:**
+
+DINOv3 (Siméoni et al., 2025) — a self-supervised vision foundation model — is evaluated extensively with **linear probes** and **k-NN classifiers** on frozen features.
+
+**How probes are used:**
+
+- **Linear probing** on ImageNet: Train a linear classifier on frozen DINOv3 features → measures quality of learned representations
+- **Dense prediction probing**: Evaluate frozen backbone features for segmentation, depth estimation, etc.
+
+**Key results:** DINOv3 achieves state-of-the-art linear probe accuracy across many benchmarks — validating that SSL learns powerful, general features.
+
+:::
+
+::: {.column width="45%"}
+
+**Why this matters for our topic:**
+
+- Alain & Bengio (2016) originally applied probes to **vision** models (ResNet, Inception)
+- DINOv3 shows probing is now a **standard evaluation protocol** for foundation models
+- The same principle applies: if a linear probe on frozen features can do well → the model has learned useful representations
+
+**Probes as evaluation vs. analysis:**
+
+| Use | Goal |
+|-----|------|
+| Analysis | Understand what each layer learns |
+| Evaluation | Benchmark representation quality |
+| Generalization | Transfer to new tasks cheaply |
+
+:::
+
+::::
+
+
+# Part 4: Tutorial & Project {background-color="#1E2761"}
+
+
+## Tutorial: Building a Linear Probe {.smaller}
+
+Here's a complete minimal example of probing a pre-trained model using Hugging Face:
+
+```{python}
+#| eval: false
+#| code-line-numbers: "|3-5|8-11|14-20|23-30|33-38"
+
+# Step 1: Load a pre-trained model
+from transformers import AutoModel, AutoTokenizer
+import torch, numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+
+# Step 2: Extract hidden states from a specific layer
+model_name = "bert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+model.eval()
+
+# Step 3: Get activations for a batch of sentences
+sentences = ["The cat sat on the mat.", "Dogs love to play fetch.", ...]
+labels = [0, 1, ...]  # Whatever property you want to probe for
+
+with torch.no_grad():
+    inputs = tokenizer(sentences, return_tensors="pt", padding=True, truncation=True)
+    outputs = model(**inputs)
+    hidden_states = outputs.hidden_states  # Tuple of (n_layers+1) tensors
+
+# Step 4: Choose a layer and pool representations
+layer_idx = 6  # Middle layer of BERT-base (12 layers)
+activations = hidden_states[layer_idx][:, 0, :]  # [CLS] token
+activations = activations.numpy()
+
+# Step 5: Train a linear probe
+X_train, X_test, y_train, y_test = train_test_split(activations, labels, test_size=0.2)
+probe = LogisticRegression(max_iter=1000, C=1.0)  # C = 1/λ (regularization)
+probe.fit(X_train, y_train)
+
+# Step 6: Evaluate
+accuracy = probe.score(X_test, y_test)
+print(f"Layer {layer_idx} probe accuracy: {accuracy:.3f}")
+
+# Step 7: Repeat for all layers to get the full picture
+for layer_idx in range(13):
+    act = hidden_states[layer_idx][:, 0, :].numpy()
+    probe = LogisticRegression(max_iter=1000).fit(X_train_acts[layer_idx], y_train)
+    print(f"Layer {layer_idx}: {probe.score(X_test_acts[layer_idx], y_test):.3f}")
+```
+
+
+## Tutorial: Regression Probe (à la Gurnee & Tegmark) {.smaller}
+
+For **continuous** targets (e.g., coordinates, timestamps), use Ridge Regression:
+
+```{python}
+#| eval: false
+#| code-line-numbers: "|1-3|6-10|13-18"
+
+from sklearn.linear_model import RidgeCV
+from sklearn.metrics import r2_score
+import numpy as np
+
+# Activations from a specific layer (e.g., Llama-2 layer 40)
+# A: (n_samples, d_model) — hidden states on the last entity token
+# Y: (n_samples, 2) — latitude, longitude coordinates
+
+# RidgeCV automatically tunes lambda via leave-one-out cross-validation
+probe = RidgeCV(alphas=np.logspace(-3, 3, 20))
+probe.fit(A_train, Y_train)
+
+# Evaluate
+Y_pred = probe.predict(A_test)
+r2 = r2_score(Y_test, Y_pred)
+print(f"R² = {r2:.3f}")
+
+# For dimensionality reduction (PCA before probing):
+from sklearn.decomposition import PCA
+pca = PCA(n_components=50)
+A_reduced = pca.fit_transform(A_train)
+```
+
+
+## Related Project: Probes for LLM Generalization {.smaller}
+
+:::: {.columns}
+
+::: {.column width="55%"}
+
+**Project: "Using Simple Statistical Probes to Generalize LLMs"**
+
+**Idea:** Use the Alain & Bengio approach to repurpose pre-trained LLMs for **new tasks** they weren't trained on.
+
+**How it works:**
+
+1. Take a **pre-trained LLM** from Hugging Face
+2. Pass data through the model and extract **middle-layer activations**
+3. Train a **simple linear model** (logistic regression or ridge regression) on these activations for your new task
+4. Evaluate on held-out test data
+
+**Why this is powerful:**
+
+- No fine-tuning needed — the LLM stays frozen
+- Extremely lightweight — train a linear model in seconds
+- The middle layers contain **richer representations** than the final layer for many tasks
+
+:::
+
+::: {.column width="45%"}
+
+**Supported by the papers we've discussed:**
+
+- **Alain & Bengio:** Middle layers of deep nets encode increasingly useful representations
+- **Gurnee & Tegmark:** LLMs learn linear representations of real-world concepts (space, time) that probes can extract
+- **Belinkov:** Probing reveals rich linguistic information at various layers
+
+**Potential experiments:**
+
+- Probe for sentiment, topic, factual attributes
+- Compare probe accuracy across layers
+- Compare different pre-trained LLMs
+- Test on domain-specific data (medical, legal, etc.)
+
+:::
+
+::::
+
+
+## Summary {.smaller}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+**Key takeaways:**
+
+1. **Probes** are simple classifiers that measure what information is encoded in neural network representations — without modifying the model
+
+2. **Linear separability increases monotonically** through network depth (Alain & Bengio, 2016)
+
+3. The probing methodology has important **limitations**: need for proper controls, risk of memorization, correlation ≠ causation (Belinkov, 2022)
+
+4. Modern LLMs learn **linear representations of space and time** that can be extracted with simple ridge regression probes (Gurnee & Tegmark, 2024)
+
+:::
+
+::: {.column width="50%"}
+
+**The bigger picture:**
+
+- Probes are now a **standard tool** for both analysis and evaluation in NLP and computer vision
+- The **linear representation hypothesis** — that neural networks encode features as directions in activation space — has strong empirical support
+- Probing provides a practical, lightweight way to **repurpose** pre-trained models for new tasks
+
+::: {.callout-tip}
+**Project connection:** The probing framework directly enables using frozen LLMs as feature extractors for new classification and regression tasks — the core idea of Project 1.
+:::
+
+:::
+
+::::
+
+
+## References {.smaller}
+
+- Alain, G. & Bengio, Y. (2016). *Understanding intermediate layers using linear classifier probes.* arXiv:1610.01644.
+- Belinkov, Y. (2022). *Probing classifiers: Promises, shortcomings, and advances.* Computational Linguistics, 48(1), 207–219.
+- Gurnee, W. & Tegmark, M. (2024). *Language models represent space and time.* ICLR 2024.
+- Siméoni, O. et al. (2025). *DINOv3.* Meta AI Research.
+- Hewitt, J. & Liang, P. (2019). *Designing and interpreting probes with control tasks.* EMNLP.
+- Voita, E. & Titov, I. (2020). *Information-theoretic probing with minimum description length.* EMNLP.
+- Elazar, Y. et al. (2021). *Amnesic probing: Behavioral explanation with amnesic counterfactuals.* TACL.
+- Giulianelli, M. et al. (2018). *Under the hood: Using diagnostic classifiers to investigate and improve how language models track agreement information.* EMNLP.
+
+## {background-color="#1E2761"}
+
+:::{.r-fit-text}
+Thank You!
+:::
+
+Questions?
