@@ -1,0 +1,1295 @@
+---
+title: "LLM Probes "
+author: "Abhisek Banerjee & Mengyan Jing"
+
+format:
+  revealjs:
+    theme: [default, custom.scss]
+    css: styles.css
+
+    # Slide geometry
+    width: 1280
+    height: 720
+    margin: 0.05
+    center: false
+
+    # Navigation & behavior
+    transition: slide
+    background-transition: fade
+    slide-number: true
+    progress: true
+    controls: true
+    hash: true
+    preview-links: true
+    incremental: false
+    chalkboard: true
+    code-line-numbers: true
+
+    # Math rendering
+    html-math-method: katex
+
+    # Tiger-stripe background ONLY for title slide
+    title-slide-attributes:
+      data-background-image: "assets/tigerstripes.png"
+      data-background-size: "cover"
+      data-background-position: "center"
+
+    # Fonts & head includes
+    include-in-header:
+      text: |
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+
+    # Footer + Home button
+    include-after-body:
+      text: |
+        <div class="mizzou-footer-bar">
+          <div class="mizzou-left">
+            <img src="assets/mizzou-logo.svg" alt="Mizzou logo">
+          </div>
+          <div class="mizzou-right">
+            Departpemt of Statistics / Class 9100
+          </div>
+        </div>
+
+        <a class="home-btn" href="#outline" title="Go to Outline" aria-label="Go to Outline">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 10.5L12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>
+          </svg>
+        </a>
+
+resources:
+  - styles.css
+  - assets
+---
+
+## Outline {#outline}
+
+<div class="toc-card">
+
+1. [Motivation](#motivation)  
+2. [Model Setup](#model-setup)  
+3. [Method](#method)  
+4. [Results](#results)  
+5. [Conclusion](#conclusion)
+
+</div>
+
+## The Black Box Problem {.smaller}
+
+Deep neural networks achieve remarkable performance — but **what happens inside?**
+
+We see the **input** and the **output**. The intermediate layers remain opaque.
+
+::: {.columns}
+::: {.column width="55%"}
+**Existing approaches at the time:**
+
+- Visualizing filters (Zeiler & Fergus, 2014)
+- Transferability studies (Yosinski et al., 2014)
+- Relevance propagation (Bach et al., 2015)
+
+**What's missing?** A simple, general-purpose tool to **quantify** what each layer knows — without modifying the model.
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+blackbox = {
+  const W = 420, H = 320;
+  // Mizzou palette
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGold = "#FFF6DC", MZgray = "#4A4A4A", MZltGray = "#F5F2EB";
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  const nL = 6, bW = 48, bH = 40, gap = 12;
+  const totalW = nL*bW + (nL-1)*gap;
+  const sx = (W - totalW)/2, cy = H/2 - 10;
+
+  for(let i=0;i<nL-1;i++){
+    svg.append("line")
+      .attr("x1",sx+i*(bW+gap)+bW).attr("y1",cy)
+      .attr("x2",sx+(i+1)*(bW+gap)).attr("y2",cy)
+      .attr("stroke",MZdkGold).attr("stroke-width",2);
+    svg.append("polygon")
+      .attr("points",`${sx+(i+1)*(bW+gap)-1},${cy-4} ${sx+(i+1)*(bW+gap)-1},${cy+4} ${sx+(i+1)*(bW+gap)+5},${cy}`)
+      .attr("fill",MZdkGold);
+  }
+
+  const labels = ["Input","H₁","H₂","H₃","H₄","Output"];
+
+  for(let i=0;i<nL;i++){
+    const x = sx + i*(bW+gap);
+    const isEnd = (i===0||i===nL-1);
+    svg.append("rect").attr("x",x).attr("y",cy-bH/2)
+      .attr("width",bW).attr("height",bH).attr("rx",6)
+      .attr("fill", isEnd ? MZgray : MZblack).attr("stroke",MZgold).attr("stroke-width",1.5);
+    svg.append("text").attr("x",x+bW/2).attr("y",cy+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", isEnd ? "white" : MZgold).attr("font-size",10).attr("font-weight",600)
+      .text(labels[i]);
+  }
+
+  // pulsing gold question marks
+  for(let i=1;i<nL-1;i++){
+    const x = sx + i*(bW+gap) + bW/2;
+    svg.append("text").attr("x",x).attr("y",cy-bH/2-14)
+      .attr("text-anchor","middle").attr("font-size",22)
+      .attr("fill",MZgold).attr("font-weight",700).text("?");
+  }
+
+  let frame = 0;
+  function pulse(){
+    frame++;
+    const op = 0.4 + 0.6*Math.abs(Math.sin(frame*0.03));
+    svg.selectAll("text").filter(function(){return d3.select(this).text()==="?";})
+      .attr("opacity", op);
+    requestAnimationFrame(pulse);
+  }
+  pulse();
+
+  svg.append("text").attr("x",W/2).attr("y",H-20)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZgray)
+    .text("What do the hidden layers learn?");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## What Is a Linear Classifier Probe? {.smaller}
+
+A **probe** is a small linear classifier attached to a layer's features — trained *independently* of the model.
+
+::: {.callout-tip}
+**Analogy:** Probes are like **thermometers** placed at many locations in a system. They measure temperature without changing it.
+:::
+
+**Key properties:**
+
+- Probes **never influence** the model (gradients are blocked via `stop_gradient`)
+- Since it's a linear classifier with softmax cross-entropy → **convex** problem (no local minima)
+- Can be attached to **every** layer simultaneously
+
+```{ojs}
+//| echo: false
+probeSchema = {
+  const W = 900, H = 230;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGold = "#FFF6DC", MZgray = "#4A4A4A", MZltGray = "#F5F2EB";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  const nL = 7, bW = 72, bH = 42, gap = 20;
+  const totalW = nL*bW + (nL-1)*gap;
+  const sx = (W-totalW)/2, mainY = 130;
+
+  // main chain arrows
+  for(let i=0;i<nL-1;i++){
+    svg.append("line")
+      .attr("x1",sx+i*(bW+gap)+bW).attr("y1",mainY)
+      .attr("x2",sx+(i+1)*(bW+gap)).attr("y2",mainY)
+      .attr("stroke",MZgray).attr("stroke-width",2)
+      .attr("marker-end","url(#arrB)");
+  }
+  svg.append("defs").append("marker").attr("id","arrB")
+    .attr("viewBox","0 0 10 10").attr("refX",10).attr("refY",5)
+    .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+    .append("path").attr("d","M0 0 L10 5 L0 10z").attr("fill",MZgray);
+
+  const labels = ["X","H₀","H₁","H₂","...","Hₖ","Ŷ"];
+
+  for(let i=0;i<nL;i++){
+    const x = sx + i*(bW+gap);
+    const isEnd = (i===0||i===nL-1);
+    svg.append("rect").attr("x",x).attr("y",mainY-bH/2)
+      .attr("width",bW).attr("height",bH).attr("rx",7)
+      .attr("fill", isEnd ? MZgray : MZblack)
+      .attr("stroke",MZgold).attr("stroke-width",1.5);
+    svg.append("text").attr("x",x+bW/2).attr("y",mainY+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", isEnd ? "white" : MZgold).attr("font-size",13).attr("font-weight",700)
+      .text(labels[i]);
+  }
+
+  // probes above (diode arrows) in gold
+  const probeY = 38;
+  for(let i=1;i<nL-1;i++){
+    if(labels[i]==="...") continue;
+    const cx = sx + i*(bW+gap) + bW/2;
+    svg.append("rect").attr("x",cx-28).attr("y",probeY-15)
+      .attr("width",56).attr("height",28).attr("rx",5)
+      .attr("fill",MZgold).attr("opacity",0.9);
+    svg.append("text").attr("x",cx).attr("y",probeY)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill",MZblack).attr("font-size",10).attr("font-weight",600)
+      .text("Ŷ" + (i-1));
+
+    svg.append("line")
+      .attr("x1",cx).attr("y1",probeY+13)
+      .attr("x2",cx).attr("y2",mainY-bH/2-4)
+      .attr("stroke",MZgold).attr("stroke-width",1.8)
+      .attr("stroke-dasharray","5,3");
+
+    const dy = probeY + 28;
+    svg.append("polygon")
+      .attr("points",`${cx-5},${dy} ${cx+5},${dy} ${cx},${dy+8}`)
+      .attr("fill",MZgold);
+    svg.append("line").attr("x1",cx-5).attr("y1",dy+9)
+      .attr("x2",cx+5).attr("y2",dy+9)
+      .attr("stroke",MZgold).attr("stroke-width",1.5);
+  }
+
+  svg.append("text").attr("x",W/2).attr("y",H-8)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZgray)
+    .text("Dashed arrows + diode symbol: gradients do NOT backpropagate to the model.");
+
+  return svg.node();
+}
+```
+
+
+## Mathematical Formulation {.smaller}
+
+At every layer $k$, take features $H_k$ and fit a linear classifier:
+
+$$f_k: H_k \to [0,1]^D, \quad h_k \mapsto \text{softmax}(Wh_k + b)$$
+
+- $(W, b)$ are learned to minimize cross-entropy — **independently** from the main model
+- $\mathcal{L}_k^{\text{train}}$, $\mathcal{L}_k^{\text{valid}}$, $\mathcal{L}_k^{\text{test}}$ = probe loss at layer $k$ on train/valid/test sets
+
+::: {.callout-important}
+**Convexity guarantee:** Linear classifier + softmax cross-entropy is a convex problem. No local minima — we always find the global optimum.
+:::
+
+```{ojs}
+//| echo: false
+mathViz = {
+  const W = 900, H = 180;
+  const MZltGray = "#F5F2EB", MZdkGold = "#C4972A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  // Convex bowl (black curve)
+  const cx = 200, cy = 60, rw = 150, rh = 70;
+
+  const nPts = 80;
+  const bowlPts = [];
+  for(let i = 0; i <= nPts; i++){
+    const t = -1 + 2 * i / nPts;
+    const x = cx + t * rw;
+    const y = cy + rh - rh * (t * t);
+    bowlPts.push([x, y]);
+  }
+
+  const line = d3.line().curve(d3.curveBasis);
+  svg.append("path").attr("d", line(bowlPts))
+    .attr("fill","none").attr("stroke","#1971c2").attr("stroke-width", 2.5);
+
+  // Green star at the bottom
+  const minY = cy + rh;
+  svg.append("circle").attr("cx", cx).attr("cy", minY).attr("r", 6)
+    .attr("fill","#2f9e44").attr("stroke","#237032").attr("stroke-width",1);
+  svg.append("text").attr("x", cx).attr("y", minY + 16)
+    .attr("text-anchor","middle").attr("font-size", 11)
+    .attr("fill","#2f9e44").attr("font-weight", 600)
+    .text("Global min ★");
+
+  svg.append("text").attr("x", cx).attr("y", 22)
+    .attr("text-anchor","middle").attr("font-size", 12)
+    .attr("fill","#343a40").attr("font-weight", 700)
+    .text("Convex probe loss");
+
+  // Red ball rolling with damping
+  const ball = svg.append("circle").attr("r", 6).attr("fill","#e03131").attr("opacity", 0.85);
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 300;
+    const phase = (frame % period) / period;
+    const amp = Math.exp(-4 * phase);
+    const t = amp * Math.cos(phase * 10 * Math.PI);
+    const bx = cx + t * rw * 0.85;
+    const by = cy + rh - rh * (t * t * 0.85 * 0.85);
+    ball.attr("cx", bx).attr("cy", by);
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  // Right side: distinct colors for each step
+  const rx = 520;
+  const items = [
+    {y: 40, label:"Features at layer k", sym:"hₖ ∈ Hₖ", color:"#1971c2"},
+    {y: 72, label:"Linear map + softmax", sym:"softmax(W·hₖ + b)", color:"#495057"},
+    {y: 104, label:"Minimize cross-entropy", sym:"ℒₖ = CE(ŷₖ, y)", color:"#e03131"},
+    {y: 136, label:"Block gradients to model", sym:"tf.stop_gradient", color:"#2f9e44"},
+  ];
+
+  items.forEach(d => {
+    svg.append("circle").attr("cx", rx).attr("cy", d.y).attr("r", 5).attr("fill", d.color);
+    svg.append("text").attr("x", rx + 14).attr("y", d.y + 1)
+      .attr("dominant-baseline","middle").attr("font-size", 12).attr("fill","#343a40")
+      .text(d.label);
+    svg.append("text").attr("x", rx + 230).attr("y", d.y + 1)
+      .attr("dominant-baseline","middle").attr("font-size", 11).attr("fill", d.color)
+      .attr("font-weight", 600).attr("font-family","monospace")
+      .text(d.sym);
+  });
+
+  return svg.node();
+}
+```
+
+
+## The Information Theory Insight {.smaller}
+
+::: {.columns}
+::: {.column width="55%"}
+
+**The Data Processing Inequality** states that for $X \to Y \to Z$:
+
+$$I(X;Z) \leq I(X;Y)$$
+
+Each layer can only **lose** information, never gain it.
+
+**Yet** deeper layers are *better* for classification. How?
+
+**Resolution:** Neural networks distill **computationally useful** representations, not maximal information.
+
+::: {.callout-tip}
+A raw image file contains millions of bytes — pixel colors, noise, background details. That's maximum information, but it's useless for answering 'is there a lion in this picture?' The network's job is to throw away the irrelevant stuff and keep only what matters for the task.
+:::
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+infoViz = {
+  const W = 400, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  const nPts = 200;
+  const padL = 50, padR = 20, padT = 50, padB = 50;
+  const xS = d3.scaleLinear().domain([0,1]).range([padL, W-padR]);
+  const yS = d3.scaleLinear().domain([0,1]).range([H-padB, padT]);
+
+  // Info content: decreasing (black line)
+  const infoLine = d3.range(nPts+1).map(i => {
+    const t = i/nPts;
+    return [xS(t), yS(1 - 0.55*t - 0.15*t*t)];
+  });
+
+  // Usefulness: increasing (gold line)
+  const useLine = d3.range(nPts+1).map(i => {
+    const t = i/nPts;
+    return [xS(t), yS(0.12 + 0.6*t + 0.28*t*t*t)];
+  });
+
+  const line = d3.line().curve(d3.curveBasis);
+
+  svg.append("path").attr("d",line(infoLine))
+    .attr("fill","none").attr("stroke",MZblack).attr("stroke-width",2.5);
+  svg.append("path").attr("d",line(useLine))
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",2.5);
+
+  svg.append("text").attr("x",W-padR-5).attr("y",yS(0.3)+4)
+    .attr("text-anchor","end").attr("font-size",11).attr("fill",MZblack).attr("font-weight",600)
+    .text("Total information");
+  svg.append("text").attr("x",W-padR-5).attr("y",yS(0.98))
+    .attr("text-anchor","end").attr("font-size",11).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("Classification usefulness");
+
+  svg.append("text").attr("x",W/2).attr("y",H-10)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZgray)
+    .text("Layer depth →");
+  svg.append("text").attr("x",14).attr("y",H/2)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZgray)
+    .attr("transform",`rotate(-90,14,${H/2})`).text("Amount");
+
+  svg.append("text").attr("x",W/2).attr("y",26)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Paradox of Depth");
+
+  const dotInfo = svg.append("circle").attr("r",5).attr("fill",MZblack).attr("opacity",0.8);
+  const dotUse = svg.append("circle").attr("r",5).attr("fill",MZgold).attr("opacity",0.9);
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const t = (frame % 300) / 300;
+    const idx = Math.floor(t * nPts);
+    dotInfo.attr("cx",infoLine[idx][0]).attr("cy",infoLine[idx][1]);
+    dotUse.attr("cx",useLine[idx][0]).attr("cy",useLine[idx][1]);
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## MNIST: A Basic Example {.smaller}
+
+**Model:** 2 conv layers + 2 fully-connected layers (the standard TensorFlow MNIST example).
+
+Probes inserted at **every** sub-operation: before/after convolution, activation, pooling.
+
+```{ojs}
+//| echo: false
+mnistViz = {
+  const W = 920, H = 450;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGold = "#FFF6DC", MZgray = "#4A4A4A", MZltGray = "#F5F2EB";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  // ===== DATA (10 probe points) =====
+  const probes = [
+    {short:"input",          pipeIdx:0},
+    {short:"conv1_preact",   pipeIdx:1},
+    {short:"conv1_postact",  pipeIdx:2},
+    {short:"conv1_postpool", pipeIdx:3},
+    {short:"conv2_preact",   pipeIdx:4},
+    {short:"conv2_postact",  pipeIdx:5},
+    {short:"conv2_postpool", pipeIdx:6},
+    {short:"fc1_preact",     pipeIdx:7},
+    {short:"fc1_postact",    pipeIdx:8},
+    {short:"logits",         pipeIdx:10}
+  ];
+
+  const errBefore = [0.080, 0.065, 0.023, 0.021, 0.019, 0.018, 0.023, 0.038, 0.10, 0.10];
+  const errAfter  = [0.080, 0.065, 0.010, 0.008, 0.006, 0.003, 0.004, 0.003, 0.002, 0.002];
+
+  const nProbes = probes.length;
+
+  // ===== PIPELINE (11 boxes matching Figure 2) =====
+  const pipeStages = [
+    {op:"input"}, {op:"conv 5×5\n32 filters"}, {op:"ReLU"}, {op:"maxpool\n2×2"},
+    {op:"conv 5×5\n64 filters"}, {op:"ReLU"}, {op:"maxpool\n2×2"},
+    {op:"matmul"}, {op:"ReLU"}, {op:"matmul"}, {op:"output\nlogits"}
+  ];
+  const nPipe = pipeStages.length;
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",14)
+    .attr("fill",MZblack).attr("font-weight",700)
+    .text("MNIST: Architecture + Probe Errors");
+
+  const bW = 62, bH = 44, gap = 12;
+  const totalPW = nPipe * bW + (nPipe - 1) * gap;
+  const psx = (W - totalPW) / 2;
+  const pipeY = 70;
+
+  const groups = [
+    {label:"convolution layer", from:1, to:3},
+    {label:"convolution layer", from:4, to:6},
+    {label:"fully-connected layer", from:7, to:8},
+    {label:"fully-connected layer", from:9, to:10}
+  ];
+
+  svg.append("defs").append("marker").attr("id","arrPipe")
+    .attr("viewBox","0 0 10 10").attr("refX",9).attr("refY",5)
+    .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+    .append("path").attr("d","M0 0 L10 5 L0 10z").attr("fill",MZdkGold);
+
+  for(let i = 0; i < nPipe - 1; i++){
+    const x1 = psx + i * (bW + gap) + bW;
+    const x2 = psx + (i + 1) * (bW + gap);
+    svg.append("line")
+      .attr("x1",x1).attr("y1",pipeY)
+      .attr("x2",x2 - 2).attr("y2",pipeY)
+      .attr("stroke",MZdkGold).attr("stroke-width",1.8)
+      .attr("marker-end","url(#arrPipe)");
+  }
+
+  for(let i = 0; i < nPipe; i++){
+    const x = psx + i * (bW + gap);
+    const isEnd = (i === 0 || i === nPipe - 1);
+    svg.append("rect").attr("x",x).attr("y",pipeY - bH/2)
+      .attr("width",bW).attr("height",bH).attr("rx",6)
+      .attr("fill", isEnd ? MZgray : MZblack)
+      .attr("stroke",MZgold).attr("stroke-width",1.5);
+
+    const opLines = pipeStages[i].op.split("\n");
+    opLines.forEach((ln, li) => {
+      svg.append("text")
+        .attr("x", x + bW/2)
+        .attr("y", pipeY - 4 + (li - (opLines.length-1)/2) * 12)
+        .attr("text-anchor","middle").attr("dominant-baseline","middle")
+        .attr("fill", (i===0||i===nPipe-1) ? "white" : MZgold)
+        .attr("font-size", 8).attr("font-weight",600)
+        .text(ln);
+    });
+  }
+
+  const bracketY = pipeY + bH/2 + 6;
+  groups.forEach(g => {
+    const x1 = psx + g.from * (bW + gap);
+    const x2 = psx + g.to * (bW + gap) + bW;
+    const mx = (x1 + x2) / 2;
+    svg.append("line").attr("x1",x1).attr("y1",bracketY).attr("x2",x1).attr("y2",bracketY+6).attr("stroke",MZgray).attr("stroke-width",1);
+    svg.append("line").attr("x1",x2).attr("y1",bracketY).attr("x2",x2).attr("y2",bracketY+6).attr("stroke",MZgray).attr("stroke-width",1);
+    svg.append("line").attr("x1",x1).attr("y1",bracketY+6).attr("x2",x2).attr("y2",bracketY+6).attr("stroke",MZgray).attr("stroke-width",1);
+    svg.append("text").attr("x",mx).attr("y",bracketY+18)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray)
+      .text(g.label);
+  });
+
+  // ===== GROUPED BAR CHART =====
+  const chartY0 = 155, chartY1 = H - 80;
+  const chartX0 = 80, chartX1 = W - 40;
+  const chartW = chartX1 - chartX0;
+  const barMaxH = chartY1 - chartY0;
+  const errMax = 0.10;
+  const errScale = d3.scaleLinear().domain([0, errMax]).range([0, barMaxH]);
+
+  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX1).attr("y2",chartY1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX0).attr("y2",chartY0).attr("stroke",MZgray);
+
+  [0, 0.02, 0.04, 0.06, 0.08, 0.10].forEach(v => {
+    const y = chartY1 - errScale(v);
+    svg.append("line").attr("x1",chartX0-4).attr("y1",y).attr("x2",chartX0).attr("y2",y).attr("stroke","#ccc");
+    svg.append("line").attr("x1",chartX0).attr("y1",y).attr("x2",chartX1).attr("y2",y)
+      .attr("stroke","#eee").attr("stroke-width",1);
+    svg.append("text").attr("x",chartX0-8).attr("y",y+1)
+      .attr("text-anchor","end").attr("dominant-baseline","middle")
+      .attr("font-size",9).attr("fill",MZgray)
+      .text((v*100).toFixed(0)+"%");
+  });
+
+  svg.append("text").attr("x",28).attr("y",(chartY0+chartY1)/2)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
+    .attr("transform",`rotate(-90,28,${(chartY0+chartY1)/2})`)
+    .text("Test prediction error");
+
+  const groupW = chartW / nProbes;
+  const singleBarW = groupW * 0.3;
+  const barPadding = groupW * 0.05;
+
+  const colorBefore = MZgold;      // gold = before
+  const colorAfter  = MZblack;     // black = after
+
+  for(let i = 0; i < nProbes; i++){
+    const groupX = chartX0 + i * groupW;
+    const cx = groupX + groupW / 2;
+
+    const bh1 = Math.min(errScale(errBefore[i]), barMaxH);
+    svg.append("rect")
+      .attr("x", cx - singleBarW - barPadding/2)
+      .attr("y", chartY1 - bh1)
+      .attr("width", singleBarW).attr("height", bh1)
+      .attr("rx",2).attr("fill", colorBefore).attr("opacity",0.8);
+
+    const bh2 = errScale(errAfter[i]);
+    svg.append("rect")
+      .attr("x", cx + barPadding/2)
+      .attr("y", chartY1 - bh2)
+      .attr("width", singleBarW).attr("height", bh2)
+      .attr("rx",2).attr("fill", colorAfter).attr("opacity",0.8);
+
+    svg.append("text")
+      .attr("x", cx).attr("y", chartY1 + 14)
+      .attr("text-anchor","end").attr("font-size", 7.5).attr("fill",MZgray)
+      .attr("transform",`rotate(-40,${cx},${chartY1+14})`)
+      .text(probes[i].short);
+
+    const pipeBoxX = psx + probes[i].pipeIdx * (bW + gap) + bW/2;
+    svg.append("line")
+      .attr("x1", pipeBoxX).attr("y1", pipeY + bH/2)
+      .attr("x2", cx).attr("y2", chartY0 - 2)
+      .attr("stroke","#ddd").attr("stroke-width",0.8)
+      .attr("stroke-dasharray","3,3");
+  }
+
+  const legX = W - 220, legY = chartY0 + 5;
+  svg.append("rect").attr("x",legX).attr("y",legY)
+    .attr("width",14).attr("height",14).attr("rx",2).attr("fill",colorBefore).attr("opacity",0.8);
+  svg.append("text").attr("x",legX+20).attr("y",legY+11)
+    .attr("font-size",10).attr("fill",MZgray).text("After initialization, no training.");
+
+  svg.append("rect").attr("x",legX).attr("y",legY+22)
+    .attr("width",14).attr("height",14).attr("rx",2).attr("fill",colorAfter).attr("opacity",0.8);
+  svg.append("text").attr("x",legX+20).attr("y",legY+33)
+    .attr("font-size",10).attr("fill",MZgray).text("After training (10 epochs)");
+
+  svg.append("text").attr("x",W/2).attr("y",H-12)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZgray)
+    .text("Random layers already useful (8%→2%). Note spike at fc1_postact before training. After training, monotonic decrease.");
+
+  return svg.node();
+}
+```
+
+**Observations:** Even **random** (untrained) layers provide useful features — error drops from 8% to 2%. After training, error **monotonically** improves at every layer.
+
+## The Key Finding: Monotonic Separability {.smaller}
+
+**Setup:** Probes attached to all 16 residual layers of a pre-trained **ResNet-50** on **ImageNet** (1000 classes, ~1.2M images).
+
+**Result:** Probe validation error decreases **almost perfectly monotonically** — deeper features are always more linearly separable. This is *not* part of the training objective — only the last layer is directly pressured by cross-entropy.
+```{ojs}
+//| echo: false
+monotonicViz = {
+  const W = 920, H = 360;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  // ===== LEFT: Scatter plot morphing =====
+  const scW = W * 0.38, padS = 40;
+
+  function randn(){
+    let u=0,v=0;
+    while(!u) u=Math.random();
+    while(!v) v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+
+  const Np = 90, seed = [];
+  for(let i=0;i<Np;i++){
+    const cls = i<Np/2 ? 0 : 1;
+    const cx0 = cls===0 ? -0.3 : 0.3;
+    const cy0 = cls===0 ? 0.2 : -0.2;
+    seed.push({
+      cls,
+      x0: cx0 + randn()*1.3,
+      y0: cy0 + randn()*1.3,
+      x1: (cls===0 ? -2.5 : 2.5) + randn()*0.4,
+      y1: (cls===0 ? -1.2 : 1.2) + randn()*0.4
+    });
+  }
+  const xSc = d3.scaleLinear().domain([-4.5,4.5]).range([padS,scW-10]);
+  const ySc = d3.scaleLinear().domain([-3.5,3.5]).range([H-30,50]);
+
+  svg.append("text").attr("x",scW/2).attr("y",28)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Feature space at current layer");
+
+  const dots = svg.selectAll(".dot").data(seed).join("circle")
+    .attr("r",3.5).attr("opacity",0.7);
+
+  const sepLine = svg.append("line")
+    .attr("stroke",MZgray).attr("stroke-width",1.5).attr("stroke-dasharray","6,4");
+
+  // ===== RIGHT: ResNet-50 error chart (from paper Figure 4b / Table 4a) =====
+  const rX0 = scW + 50;
+  const rW = W - rX0 - 30;
+  const rPadT = 50, rPadB = 75;
+
+  const layers = [
+    {name:"input",err:0.99,group:0},
+    {name:"add_1",err:0.94,group:1},
+    {name:"add_2",err:0.89,group:1},
+    {name:"add_3",err:0.88,group:1},
+    {name:"add_4",err:0.87,group:2},
+    {name:"add_5",err:0.82,group:2},
+    {name:"add_6",err:0.79,group:2},
+    {name:"add_7",err:0.76,group:2},
+    {name:"add_8",err:0.77,group:3},
+    {name:"add_9",err:0.69,group:3},
+    {name:"add_10",err:0.67,group:3},
+    {name:"add_11",err:0.62,group:3},
+    {name:"add_12",err:0.57,group:3},
+    {name:"add_13",err:0.51,group:3},
+    {name:"add_14",err:0.41,group:4},
+    {name:"add_15",err:0.39,group:4},
+    {name:"add_16",err:0.31,group:4},
+  ];
+  const nL = layers.length;
+
+  const axX = d3.scaleLinear().domain([0,nL-1]).range([rX0, rX0+rW]);
+  const axY = d3.scaleLinear().domain([0,1]).range([H-rPadB, rPadT]);
+
+  // Group bands
+  const groupFills = ["#FAFAFA","#FFF6DC","#FAFAFA","#FFF6DC","#FAFAFA"];
+  const groupLabels = ["","256 ch","512 ch","1024 ch","2048 ch"];
+  for(let g=0;g<=4;g++){
+    const idxs = layers.map((l,i)=>({l,i})).filter(d=>d.l.group===g);
+    if(idxs.length===0) continue;
+    const x0g = axX(idxs[0].i) - 14;
+    const x1g = axX(idxs[idxs.length-1].i) + 14;
+    svg.append("rect").attr("x",x0g).attr("y",rPadT-5).attr("width",x1g-x0g).attr("height",H-rPadB-rPadT+10)
+      .attr("rx",3).attr("fill",groupFills[g]).attr("opacity",0.7);
+    if(g>0){
+      svg.append("text").attr("x",(x0g+x1g)/2).attr("y",rPadT-10)
+        .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZdkGold)
+        .text(groupLabels[g]);
+    }
+  }
+
+  // Axes
+  svg.append("line").attr("x1",rX0).attr("y1",H-rPadB).attr("x2",rX0+rW).attr("y2",H-rPadB).attr("stroke",MZgray);
+  svg.append("line").attr("x1",rX0).attr("y1",H-rPadB).attr("x2",rX0).attr("y2",rPadT).attr("stroke",MZgray);
+
+  [0,0.2,0.4,0.6,0.8,1.0].forEach(v => {
+    const y = axY(v);
+    svg.append("line").attr("x1",rX0-3).attr("y1",y).attr("x2",rX0).attr("y2",y).attr("stroke","#ccc");
+    svg.append("text").attr("x",rX0-6).attr("y",y+1)
+      .attr("text-anchor","end").attr("dominant-baseline","middle")
+      .attr("font-size",8).attr("fill",MZgray).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",rX0-28).attr("y",(rPadT+H-rPadB)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .attr("transform",`rotate(-90,${rX0-28},${(rPadT+H-rPadB)/2})`).text("Validation prediction error");
+
+  // X labels
+  layers.forEach((l,i) => {
+    svg.append("text").attr("x",axX(i)).attr("y",H-rPadB+12)
+      .attr("text-anchor","end").attr("font-size",6.5).attr("fill",MZgray)
+      .attr("transform",`rotate(-45,${axX(i)},${H-rPadB+12})`)
+      .text(l.name);
+  });
+
+  // Model top-layer reference line
+  svg.append("line").attr("x1",rX0).attr("y1",axY(0.28)).attr("x2",rX0+rW).attr("y2",axY(0.28))
+    .attr("stroke",MZgold).attr("stroke-width",1.5).attr("stroke-dasharray","6,3");
+  svg.append("text").attr("x",rX0+rW-2).attr("y",axY(0.28)-7)
+    .attr("text-anchor","end").attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("Model top layer");
+
+  svg.append("text").attr("x",rX0+rW/2).attr("y",28)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("ResNet-50 Probe Error");
+
+  // ResNet curve and animated dot
+  const lineFn = d3.line().curve(d3.curveMonotoneX);
+  const allPts = layers.map((l,i) => [axX(i), axY(l.err)]);
+  const pathEl = svg.append("path").attr("fill","none").attr("stroke",MZblack).attr("stroke-width",2.5);
+  const animDot = svg.append("circle").attr("r",5).attr("fill",MZgold).attr("stroke",MZdkGold).attr("stroke-width",1);
+  const valLabel = svg.append("text")
+    .attr("font-size",10).attr("fill",MZblack).attr("font-weight",700).attr("text-anchor","middle");
+
+  const sepX = xSc(0);
+
+  // ===== Synchronized animation =====
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 500;
+    const t = (frame % period) / period;
+    const layerIdx = Math.min(Math.floor(t * nL), nL-1);
+
+    // LEFT: scatter interpolation
+    dots
+      .attr("cx", d => xSc(d.x0*(1-t) + d.x1*t))
+      .attr("cy", d => ySc(d.y0*(1-t) + d.y1*t))
+      .attr("fill", d => d.cls===0 ? MZblack : MZgold);
+
+    sepLine.attr("x1",sepX).attr("y1",50).attr("x2",sepX).attr("y2",H-30).attr("opacity",0.5);
+
+    // RIGHT: ResNet curve drawing
+    pathEl.attr("d", lineFn(allPts.slice(0, layerIdx+1)));
+    animDot.attr("cx",allPts[layerIdx][0]).attr("cy",allPts[layerIdx][1]);
+    valLabel.attr("x",allPts[layerIdx][0]).attr("y",allPts[layerIdx][1]-12)
+      .text(layers[layerIdx].err.toFixed(2));
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+::: {.callout-note}
+This "greedy" layerwise improvement suggests each layer refines the representation slightly, making it more linearly separable — an **emergent property** of standard backpropagation.
+:::
+
+## Practical Concerns {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+### Train vs Validation Loss
+
+- $\mathcal{L}_k^{\text{valid}}$ is more meaningful to monitor
+- But $\mathcal{L}_k^{\text{train}}$ is easier to compute in all settings
+- For building intuition, both are acceptable
+
+### Reporting Metric
+
+- Paper reports **classification error** (not cross-entropy)
+- Ultimately the quantity practitioners care about
+- Top-5 error also possible
+
+:::
+::: {.column width="50%"}
+
+### Feature Dimension Reduction
+
+Large layers (millions of features) make probes impractical. Three solutions:
+
+```{ojs}
+//| echo: false
+dimViz = {
+  const W = 400, H = 260;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  const methods = [
+    {y:45, icon:"🎲", title:"Random subset", desc:"Keep fixed random features", used:"Inception v3"},
+    {y:115, icon:"📐", title:"Projection", desc:"Learn lower-dim mapping", used:"(costly storage)"},
+    {y:185, icon:"🏊", title:"2D pooling", desc:"Pool (H,W) per channel", used:"ResNet-50"},
+  ];
+
+  methods.forEach((m,i) => {
+    svg.append("text").attr("x",30).attr("y",m.y)
+      .attr("font-size",26).attr("dominant-baseline","middle").text(m.icon);
+    svg.append("text").attr("x",65).attr("y",m.y-8)
+      .attr("font-size",13).attr("fill",MZblack).attr("font-weight",700).text(m.title);
+    svg.append("text").attr("x",65).attr("y",m.y+10)
+      .attr("font-size",11).attr("fill",MZgray).text(m.desc);
+    svg.append("text").attr("x",65).attr("y",m.y+27)
+      .attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",600)
+      .text("Used for: " + m.used);
+
+    if(i < methods.length-1){
+      svg.append("line").attr("x1",30).attr("y1",m.y+42).attr("x2",W-30).attr("y2",m.y+42)
+        .attr("stroke","#ddd").attr("stroke-width",1);
+    }
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+::: {.callout-warning}
+**Overfitting danger:** With too many features, probes can memorize random labels (Zhang et al., 2016). Dimension reduction is essential for meaningful measurements.
+:::
+
+
+## Inception v3: Probing During Training {.smaller}
+
+Inception v3 has a complex architecture with an **auxiliary head** that helps training.
+
+Probes are color-coded by prediction error: 🔴 high error → 🟡 gold = low error.
+
+```{ojs}
+//| echo: false
+inceptionViz = {
+  const W = 900, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  const snapshots = [
+    {label:"Step 1,515", minibatch:1515, progress:0.005},
+    {label:"Step 50,389", minibatch:50389, progress:0.16},
+    {label:"Step 100,876", minibatch:100876, progress:0.33},
+    {label:"Step 308,230", minibatch:308230, progress:1.0},
+  ];
+
+  const nProbes = 17;
+  const cellW = 38, cellH = 28, gapY = 12;
+  const startX = 160, startY = 50;
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Inception v3 Probe Errors Over Training");
+
+  // Custom Mizzou color scale: black (high error) → gold (low error)
+  const errColor = d3.scaleLinear()
+    .domain([0, 0.5, 1])
+    .range([MZgold, MZdkGold, MZblack]);
+
+  snapshots.forEach((snap, si) => {
+    const y = startY + si*(cellH + gapY);
+
+    svg.append("text").attr("x",startX-10).attr("y",y+cellH/2+1)
+      .attr("text-anchor","end").attr("dominant-baseline","middle")
+      .attr("font-size",11).attr("fill",MZblack).attr("font-weight",600)
+      .text(snap.label);
+
+    for(let p=0;p<nProbes;p++){
+      const depth = p/(nProbes-1);
+      const rawErr = 1.0 / (1.0 + Math.exp(-(depth*6 - 3 - snap.progress*3)));
+      const err = 1.0 - rawErr * snap.progress;
+
+      const x = startX + p*cellW;
+      svg.append("rect").attr("x",x).attr("y",y)
+        .attr("width",cellW-2).attr("height",cellH)
+        .attr("rx",3)
+        .attr("fill", errColor(err));
+    }
+  });
+
+  for(let p=0;p<nProbes;p++){
+    svg.append("text").attr("x",startX + p*cellW + (cellW-2)/2).attr("y",startY-8)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray)
+      .text(p+1);
+  }
+  svg.append("text").attr("x",startX + (nProbes*cellW)/2).attr("y",startY-22)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
+    .text("Probe index (shallow → deep)");
+
+  // Color legend: black → gold
+  const legX = startX, legY = startY + 4*(cellH+gapY) + 20;
+  const legW = 200, legH = 14;
+  const defs = svg.append("defs");
+  const grad = defs.append("linearGradient").attr("id","errGradMZ");
+  grad.append("stop").attr("offset","0%").attr("stop-color",MZblack);
+  grad.append("stop").attr("offset","50%").attr("stop-color",MZdkGold);
+  grad.append("stop").attr("offset","100%").attr("stop-color",MZgold);
+
+  svg.append("rect").attr("x",legX).attr("y",legY).attr("width",legW).attr("height",legH)
+    .attr("rx",3).attr("fill","url(#errGradMZ)");
+  svg.append("text").attr("x",legX).attr("y",legY+legH+14)
+    .attr("font-size",9).attr("fill",MZblack).text("High error (1.0)");
+  svg.append("text").attr("x",legX+legW).attr("y",legY+legH+14)
+    .attr("text-anchor","end").attr("font-size",9).attr("fill",MZdkGold).text("Low error (0.0)");
+
+  svg.append("text").attr("x",startX + nProbes*cellW + 30).attr("y",startY + 50)
+    .attr("font-size",12).attr("fill",MZblack).attr("font-weight",600)
+    .text("Observations:");
+  const obs = [
+    "• Smooth color gradient → monotonic",
+    "• Deeper layers improve first",
+    "• Auxiliary head slightly ahead",
+    "  of main head early on",
+    "• 1000 classes: 50% err ≫ random"
+  ];
+  obs.forEach((o,i) => {
+    svg.append("text").attr("x",startX + nProbes*cellW + 30).attr("y",startY + 72 + i*18)
+      .attr("font-size",10).attr("fill",MZgray).text(o);
+  });
+
+  return svg.node();
+}
+```
+
+::: {.callout-note}
+**Auxiliary head insight:** The auxiliary branch was observed to have slightly lower prediction error than the main head early in training — it was "leading" training, though only by a small margin.
+:::
+
+
+## Diagnosing Pathological Models {.smaller}
+
+Probes aren't just for understanding — they're a **diagnostic tool**.
+
+**Experiment:** A deliberately pathological model: 128 FC layers (128 units each) on MNIST, with a skip connection jumping from input to layer 64.
+
+```{ojs}
+//| echo: false
+skipViz = {
+  const W = 900, H = 360;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGold = "#FFF6DC", MZgray = "#4A4A4A", MZltGray = "#F5F2EB";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Pathological Skip Connection — Diagnosed by Probes");
+
+  const archY = 65;
+  const nBlocks = 20;
+  const bW = 28, bH = 22, gapX = 10;
+  const totalBW = nBlocks*bW + (nBlocks-1)*gapX;
+  const archSX = (W - totalBW)/2;
+
+  for(let i=0;i<nBlocks;i++){
+    const x = archSX + i*(bW+gapX);
+    const isFirst = i<nBlocks/2;
+    svg.append("rect").attr("x",x).attr("y",archY-bH/2)
+      .attr("width",bW).attr("height",bH).attr("rx",4)
+      .attr("fill", isFirst ? MZblack : MZgold)
+      .attr("stroke", isFirst ? MZgray : MZdkGold);
+    if(i<nBlocks-1){
+      svg.append("line")
+        .attr("x1",x+bW).attr("y1",archY)
+        .attr("x2",x+bW+gapX).attr("y2",archY)
+        .attr("stroke","#ccc").attr("stroke-width",1);
+    }
+  }
+
+  // Skip connection arc (gold)
+  const skipFrom = archSX;
+  const skipTo = archSX + nBlocks/2 * (bW+gapX);
+  svg.append("path")
+    .attr("d",`M${skipFrom},${archY-bH/2} Q${(skipFrom+skipTo)/2},${archY-bH/2-35} ${skipTo},${archY-bH/2}`)
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",2.5)
+    .attr("marker-end","url(#arrO)");
+
+  svg.append("defs").append("marker").attr("id","arrO")
+    .attr("viewBox","0 0 10 10").attr("refX",10).attr("refY",5)
+    .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+    .append("path").attr("d","M0 0 L10 5 L0 10z").attr("fill",MZgold);
+
+  svg.append("text").attr("x",(skipFrom+skipTo)/2).attr("y",archY-bH/2-38)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("Skip connection (input → layer 64)");
+
+  svg.append("text").attr("x",archSX + nBlocks/4*(bW+gapX)).attr("y",archY+bH/2+14)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).text("Dead zone (layers 0-63)");
+  svg.append("text").attr("x",archSX + 3*nBlocks/4*(bW+gapX)).attr("y",archY+bH/2+14)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZdkGold).text("Active (layers 64-127)");
+
+  // BOTTOM: animated probe error chart
+  const chartY0 = 150, chartY1 = H - 40;
+  const chartX0 = 70, chartX1 = W - 40;
+  const nPts = 128;
+
+  const probeErrors = [];
+  for(let i=0;i<nPts;i++){
+    if(i < 64){
+      probeErrors.push(0.88 + 0.04*Math.sin(i*0.1));
+    } else {
+      const t = (i-64)/63;
+      probeErrors.push(0.88 - 0.82*t*t);
+    }
+  }
+
+  const pxS = d3.scaleLinear().domain([0,nPts-1]).range([chartX0, chartX1]);
+  const pyS = d3.scaleLinear().domain([0,1]).range([chartY1, chartY0]);
+
+  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX1).attr("y2",chartY1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX0).attr("y2",chartY0).attr("stroke",MZgray);
+  svg.append("text").attr("x",(chartX0+chartX1)/2).attr("y",chartY1+24)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray).text("Layer index (0 → 127)");
+  svg.append("text").attr("x",chartX0-35).attr("y",(chartY0+chartY1)/2)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
+    .attr("transform",`rotate(-90,${chartX0-35},${(chartY0+chartY1)/2})`).text("Probe error");
+
+  // Dead zone shading (light gold tint)
+  svg.append("rect").attr("x",chartX0).attr("y",chartY0)
+    .attr("width",pxS(64)-chartX0).attr("height",chartY1-chartY0)
+    .attr("fill",MZltGold).attr("opacity",0.5);
+
+  svg.append("line").attr("x1",pxS(64)).attr("y1",chartY0).attr("x2",pxS(64)).attr("y2",chartY1)
+    .attr("stroke",MZgold).attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
+  svg.append("text").attr("x",pxS(64)+4).attr("y",chartY0+12)
+    .attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600).text("Skip lands here");
+
+  const lineFn = d3.line().curve(d3.curveMonotoneX);
+  const allPts = probeErrors.map((e,i) => [pxS(i), pyS(e)]);
+
+  const pathEl = svg.append("path").attr("fill","none").attr("stroke",MZblack).attr("stroke-width",2);
+  const animDot = svg.append("circle").attr("r",4).attr("fill",MZgold).attr("stroke",MZdkGold).attr("stroke-width",1);
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 600;
+    const t = (frame % period) / period;
+    const idx = Math.min(Math.floor(t * nPts), nPts-1);
+
+    const pts = allPts.filter((_,i) => i <= idx && i%2===0);
+    if(idx%2!==0) pts.push(allPts[idx]);
+    pathEl.attr("d",lineFn(pts));
+    animDot.attr("cx",allPts[idx][0]).attr("cy",allPts[idx][1]);
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+**The probe reveals:** The first 64 layers are **completely dead** — flat high error. The skip connection let the model bypass them entirely. Without probes, this failure would be invisible from the final loss alone.
+
+
+## Other Applications & Extensions {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+### Probing with Different Labels
+
+Probes are not limited to the original task's classes:
+
+> *"Is there any information about factor \_\_\_\_\_ present in this part of the model?"*
+
+**Examples:**
+
+- Probe a vision model for **color** information
+- Probe for **texture** vs **shape**
+- Probe an NLP model for **syntax** or **sentiment**
+- Transfer across domains (same layers, new labels)
+
+### Multi-Layer Probes?
+
+Suggested extension, but authors caution:
+
+- Loses **convexity** guarantee
+- Risk of overfitting in the probe itself
+- "Premature" — linear probes suffice for now
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+extensionViz = {
+  const W = 420, H = 380;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",26)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("One model, many probe targets");
+
+  const cx = W/2, stackTop = 60, stackBot = 220;
+  const stackW = 80;
+  const nStack = 5;
+
+  for(let i=0;i<nStack;i++){
+    const y = stackTop + i*(stackBot-stackTop)/(nStack-1);
+    svg.append("rect").attr("x",cx-stackW/2).attr("y",y-12)
+      .attr("width",stackW).attr("height",24).attr("rx",5)
+      .attr("fill",MZblack).attr("stroke",MZgold).attr("stroke-width",1);
+    svg.append("text").attr("x",cx).attr("y",y+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill",MZgold).attr("font-size",10).attr("font-weight",600)
+      .text(i===0?"Input":i===nStack-1?"Output":`Layer ${i}`);
+  }
+
+  // Probes in gold palette variations
+  const targets = [
+    {label:"Object class",x:50, y:100, color:MZgold},
+    {label:"Color",x:50, y:160, color:MZdkGold},
+    {label:"Texture",x:50, y:220, color:"#E6A800"},
+    {label:"Location",x:350, y:100, color:MZgold},
+    {label:"Sentiment",x:350, y:160, color:MZdkGold},
+    {label:"Syntax",x:350, y:220, color:"#E6A800"},
+  ];
+
+  targets.forEach(t => {
+    const fromX = t.x < cx ? cx - stackW/2 : cx + stackW/2;
+    const fromY = t.y;
+    svg.append("line")
+      .attr("x1",fromX).attr("y1",fromY)
+      .attr("x2",t.x + (t.x<cx?40:-40)).attr("y2",t.y)
+      .attr("stroke",t.color).attr("stroke-width",1.5).attr("stroke-dasharray","4,3");
+    svg.append("rect")
+      .attr("x",t.x-38).attr("y",t.y-12)
+      .attr("width",76).attr("height",24).attr("rx",12)
+      .attr("fill",t.color).attr("opacity",0.15)
+      .attr("stroke",t.color);
+    svg.append("text").attr("x",t.x).attr("y",t.y+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("font-size",10).attr("fill",MZblack).attr("font-weight",600)
+      .text(t.label);
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",270)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Future directions mentioned:");
+
+  const futures = [
+    "ResNet-101, ResNet-151, VGG-16, VGG-19",
+    "RNNs and sequence models",
+    "GANs and adversarial examples",
+    "Actively discouraging linear separability",
+  ];
+  futures.forEach((f,i) => {
+    svg.append("text").attr("x",W/2).attr("y",295+i*20)
+      .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZgray)
+      .text(f);
+  });
+
+  return svg.node();
+}
+```
+
+
+
+:::
+:::
+
+
+##  {data-background-image="assets/tigerstripes.png" data-background-size="cover" data-background-position="center"}
+
+<div class="thankyou-slide">
+
+<div class="thankyou-content">
+
+Thank you for your attention!
+
+
+</div>
+
+</div>
