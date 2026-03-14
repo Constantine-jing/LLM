@@ -79,19 +79,18 @@ resources:
 
 ## The Black Box Problem {.smaller}
 
+::: {.columns}
+::: {.column width="55%"}
+
 Deep neural networks achieve remarkable performance — but **what happens inside?**
 
 We see the **input** and the **output**. The intermediate layers remain opaque.
 
-::: {.columns}
-::: {.column width="55%"}
-**Existing approaches at the time:**
-
-- Visualizing filters (Zeiler & Fergus, 2014)
-- Transferability studies (Yosinski et al., 2014)
-- Relevance propagation (Bach et al., 2015)
 
 **What's missing?** A simple, general-purpose tool to **quantify** what each layer knows — without modifying the model.
+
+**Alain & Bengio** solves this problem!
+
 :::
 ::: {.column width="45%"}
 
@@ -173,9 +172,9 @@ blackbox = {
 
 A **probe** is a small linear classifier attached to a layer's features — trained *independently* of the model.
 
-::: {.callout-tip}
+
 **Analogy:** Probes are like **thermometers** placed at many locations in a system. They measure temperature without changing it.
-:::
+
 
 **Key properties:**
 
@@ -276,9 +275,8 @@ $$f_k: H_k \to [0,1]^D, \quad h_k \mapsto \text{softmax}(Wh_k + b)$$
 - $(W, b)$ are learned to minimize cross-entropy — **independently** from the main model
 - $\mathcal{L}_k^{\text{train}}$, $\mathcal{L}_k^{\text{valid}}$, $\mathcal{L}_k^{\text{test}}$ = probe loss at layer $k$ on train/valid/test sets
 
-::: {.callout-important}
 **Convexity guarantee:** Linear classifier + softmax cross-entropy is a convex problem. No local minima — we always find the global optimum.
-:::
+
 
 ```{ojs}
 //| echo: false
@@ -381,9 +379,9 @@ Each layer can only **lose** information, never gain it.
 
 **Resolution:** Neural networks distill **computationally useful** representations, not maximal information.
 
-::: {.callout-tip}
+
 A raw image file contains millions of bytes — pixel colors, noise, background details. That's maximum information, but it's useless for answering 'is there a lion in this picture?' The network's job is to throw away the irrelevant stuff and keep only what matters for the task.
-:::
+
 :::
 ::: {.column width="45%"}
 
@@ -843,9 +841,221 @@ monotonicViz = {
 }
 ```
 
-::: {.callout-note}
-This "greedy" layerwise improvement suggests each layer refines the representation slightly, making it more linearly separable — an **emergent property** of standard backpropagation.
-:::
+
+
+
+## Inception v3: Probing During Training {.smaller}
+
+Inception v3 has a complex architecture with an **auxiliary head** that helps training.
+
+Probes are color-coded by prediction error.
+
+```{ojs}
+//| echo: false
+inceptionViz = {
+  const W = 920, H = 400;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+ 
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2 - 30).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Inception v3 Probe Errors Over Training (Fig 9)");
+
+  const errColor = d3.scaleLinear()
+    .domain([0, 0.3, 0.5, 0.75, 1.0])
+    .range(["#C0C0C0", MZgold, "#D4A017", "#3D2E00", MZblack]);
+
+  const snapshots = [
+    {label:"Minibatch 1,515",   progress:0.005},
+    {label:"Minibatch 50,389",  progress:0.16},
+    {label:"Minibatch 100,876", progress:0.33},
+    {label:"Minibatch 308,230", progress:1.0},
+  ];
+
+  const nMain = 14;
+  const modW = 34, modH = 34, modGap = 4;
+  const rowH = 90;
+  const startX = 120, startY = 42;
+
+  function getErr(probeIdx, progress) {
+    const depth = probeIdx / 16;
+    const untrained = 0.95;
+    const fullyTrained = 0.90 - 0.80 * depth;
+    const err = untrained * (1.0 - progress) + fullyTrained * progress;
+    return Math.max(0, Math.min(1, err));
+  }
+
+  // Aux head is slightly ahead: lower error = more gold
+  // The advantage is bigger early in training, narrows later
+  function getAuxErr(probeIdx, progress) {
+    const baseErr = getErr(probeIdx, progress);
+    const advantage = 0.3 * (1.0 - progress * 0.7); // bigger lead early, shrinks later
+    return Math.max(0, baseErr - advantage);
+  }
+
+  snapshots.forEach((snap, si) => {
+    const rowY = startY + si * rowH;
+
+    svg.append("text").attr("x",startX - 8).attr("y",rowY + modH/2)
+      .attr("text-anchor","end").attr("dominant-baseline","middle")
+      .attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+      .text(snap.label);
+
+    // Main path: 14 modules
+    for(let m = 0; m < nMain; m++) {
+      const x = startX + m * (modW + modGap);
+      const y = rowY;
+      const err = getErr(m, snap.progress);
+
+      svg.append("rect").attr("x",x).attr("y",y)
+        .attr("width",modW).attr("height",modH).attr("rx",4)
+        .attr("fill", errColor(err))
+        .attr("stroke", errColor(Math.max(0, err - 0.12)))
+        .attr("stroke-width",1);
+
+      const patR = 2.5, patGap = 8;
+      const nPatX = 3, nPatY = 2;
+      const patSX = x + (modW - (nPatX-1)*patGap) / 2;
+      const patSY = y + (modH - (nPatY-1)*patGap) / 2;
+      for(let px=0;px<nPatX;px++){
+        for(let py=0;py<nPatY;py++){
+          svg.append("circle")
+            .attr("cx", patSX + px*patGap)
+            .attr("cy", patSY + py*patGap)
+            .attr("r", patR)
+            .attr("fill","none")
+            .attr("stroke", err > 0.5 ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.2)")
+            .attr("stroke-width",0.7);
+        }
+      }
+
+      if(m < nMain - 1) {
+        svg.append("line")
+          .attr("x1",x+modW).attr("y1",y+modH/2)
+          .attr("x2",x+modW+modGap).attr("y2",y+modH/2)
+          .attr("stroke", err > 0.5 ? "rgba(255,255,255,0.2)" : MZdkGold)
+          .attr("stroke-width",1);
+      }
+    }
+
+    // Auxiliary head: branches down from module 12
+    // Uses getAuxErr — slightly lower error (more gold) than main head
+    const auxBranchAt = 12;
+    const auxX0 = startX + auxBranchAt * (modW + modGap) + modW/2;
+    const auxY0 = rowY + modH;
+    const auxBlockW = 12, auxBlockH = 22, auxGapX = 3;
+    const auxErr = getAuxErr(auxBranchAt + 1, snap.progress);
+
+    svg.append("line")
+      .attr("x1",auxX0).attr("y1",auxY0)
+      .attr("x2",auxX0).attr("y2",auxY0 + 14)
+      .attr("stroke",MZgray).attr("stroke-width",1);
+
+    for(let a = 0; a < 3; a++){
+      const ax = auxX0 - auxBlockW/2 + (a - 1) * (auxBlockW + auxGapX);
+      const ay = auxY0 + 16;
+      svg.append("rect").attr("x",ax).attr("y",ay)
+        .attr("width",auxBlockW).attr("height",auxBlockH).attr("rx",2)
+        .attr("fill",errColor(auxErr))
+        .attr("stroke",errColor(Math.max(0,auxErr-0.12)))
+        .attr("stroke-width",0.8);
+    }
+
+    svg.append("text")
+      .attr("x",auxX0 + 35).attr("y",auxY0 + 30)
+      .attr("font-size",7).attr("fill",MZgray)
+      .text("auxiliary head");
+
+    // Main head: 2 output blocks (uses regular getErr — slightly behind aux)
+    const mainHeadStartX = startX + nMain * (modW + modGap) + 4;
+    const mhW = modW - 4, mhH = modH + 4;
+
+    svg.append("line")
+      .attr("x1", startX + (nMain-1)*(modW+modGap) + modW)
+      .attr("y1", rowY + modH/2)
+      .attr("x2", mainHeadStartX)
+      .attr("y2", rowY + modH/2)
+      .attr("stroke", MZdkGold).attr("stroke-width",1);
+
+    for(let m = 0; m < 2; m++){
+      const x = mainHeadStartX + m * (mhW + 4);
+      const y = rowY - 2;
+      const err = getErr(15 + m, snap.progress);
+
+      svg.append("rect").attr("x",x).attr("y",y)
+        .attr("width",mhW).attr("height",mhH).attr("rx",3)
+        .attr("fill",errColor(err))
+        .attr("stroke",errColor(Math.max(0,err-0.12)))
+        .attr("stroke-width",1);
+
+      for(let b=0;b<3;b++){
+        svg.append("rect")
+          .attr("x",x+5+b*8).attr("y",y+6)
+          .attr("width",4).attr("height",mhH-12).attr("rx",1)
+          .attr("fill","none")
+          .attr("stroke", err > 0.5 ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.2)")
+          .attr("stroke-width",0.7);
+      }
+
+      if(m === 0){
+        svg.append("line")
+          .attr("x1",x+mhW).attr("y1",y+mhH/2)
+          .attr("x2",x+mhW+4).attr("y2",y+mhH/2)
+          .attr("stroke",MZdkGold).attr("stroke-width",1);
+      }
+    }
+
+    const mhLabelX = mainHeadStartX + mhW;
+    svg.append("text").attr("x",mhLabelX).attr("y",rowY - 10)
+      .attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZgray).text("main head");
+  });
+
+  // ===== VERTICAL LEGEND on the right =====
+  const legX = W - 55, legTop = startY + 20, legBot = startY + 4*rowH - 40;
+  const legW = 14, legH = legBot - legTop;
+
+  const defs = svg.append("defs");
+  const grad = defs.append("linearGradient").attr("id","errGradVert")
+    .attr("x1","0").attr("y1","0").attr("x2","0").attr("y2","1");
+  grad.append("stop").attr("offset","0%").attr("stop-color","#C0C0C0");
+  grad.append("stop").attr("offset","30%").attr("stop-color",MZgold);
+  grad.append("stop").attr("offset","50%").attr("stop-color","#D4A017");
+  grad.append("stop").attr("offset","75%").attr("stop-color","#3D2E00");
+  grad.append("stop").attr("offset","100%").attr("stop-color",MZblack);
+
+  svg.append("rect").attr("x",legX).attr("y",legTop)
+    .attr("width",legW).attr("height",legH)
+    .attr("rx",3).attr("fill","url(#errGradVert)")
+    .attr("stroke",MZgray).attr("stroke-width",0.5);
+
+  svg.append("text").attr("x",legX + legW/2).attr("y",legTop - 8)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill","#999").attr("font-weight",600)
+    .text("0.0");
+  svg.append("text").attr("x",legX + legW/2).attr("y",legBot + 14)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZblack).attr("font-weight",600)
+    .text("1.0");
+
+  const legMidY = (legTop + legBot) / 2;
+  svg.append("text").attr("x",legX + legW + 14).attr("y",legMidY)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray).attr("font-weight",600)
+    .attr("transform",`rotate(90,${legX + legW + 14},${legMidY})`)
+    .text("probe training prediction error");
+
+  return svg.node();
+}
+```
+
+**The probe reveals:** The first 64 layers are **completely dead** — flat high error. The skip connection let the model bypass them entirely. Without probes, this failure would be invisible from the final loss alone.
+
 
 ## Practical Concerns {.smaller}
 
@@ -858,11 +1068,10 @@ This "greedy" layerwise improvement suggests each layer refines the representati
 - But $\mathcal{L}_k^{\text{train}}$ is easier to compute in all settings
 - For building intuition, both are acceptable
 
-### Reporting Metric
+### Overfitting danger
 
-- Paper reports **classification error** (not cross-entropy)
-- Ultimately the quantity practitioners care about
-- Top-5 error also possible
+- With too many features, probes can memorize random labels. 
+- Dimension reduction is essential for meaningful measurements.
 
 :::
 ::: {.column width="50%"}
@@ -916,253 +1125,6 @@ dimViz = {
 :::
 :::
 
-::: {.callout-warning}
-**Overfitting danger:** With too many features, probes can memorize random labels (Zhang et al., 2016). Dimension reduction is essential for meaningful measurements.
-:::
-
-
-## Inception v3: Probing During Training {.smaller}
-
-Inception v3 has a complex architecture with an **auxiliary head** that helps training.
-
-Probes are color-coded by prediction error: 🔴 high error → 🟡 gold = low error.
-
-```{ojs}
-//| echo: false
-inceptionViz = {
-  const W = 900, H = 340;
-  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
-  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
-
-  const svg = d3.create("svg")
-    .attr("viewBox",`0 0 ${W} ${H}`)
-    .style("width","100%").style("max-width",`${W}px`)
-    .style("font-family","system-ui, sans-serif");
-
-  svg.append("rect").attr("width",W).attr("height",H)
-    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
-
-  const snapshots = [
-    {label:"Step 1,515", minibatch:1515, progress:0.005},
-    {label:"Step 50,389", minibatch:50389, progress:0.16},
-    {label:"Step 100,876", minibatch:100876, progress:0.33},
-    {label:"Step 308,230", minibatch:308230, progress:1.0},
-  ];
-
-  const nProbes = 17;
-  const cellW = 38, cellH = 28, gapY = 12;
-  const startX = 160, startY = 50;
-
-  svg.append("text").attr("x",W/2).attr("y",24)
-    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
-    .text("Inception v3 Probe Errors Over Training");
-
-  // Custom Mizzou color scale: black (high error) → gold (low error)
-  const errColor = d3.scaleLinear()
-    .domain([0, 0.5, 1])
-    .range([MZgold, MZdkGold, MZblack]);
-
-  snapshots.forEach((snap, si) => {
-    const y = startY + si*(cellH + gapY);
-
-    svg.append("text").attr("x",startX-10).attr("y",y+cellH/2+1)
-      .attr("text-anchor","end").attr("dominant-baseline","middle")
-      .attr("font-size",11).attr("fill",MZblack).attr("font-weight",600)
-      .text(snap.label);
-
-    for(let p=0;p<nProbes;p++){
-      const depth = p/(nProbes-1);
-      const rawErr = 1.0 / (1.0 + Math.exp(-(depth*6 - 3 - snap.progress*3)));
-      const err = 1.0 - rawErr * snap.progress;
-
-      const x = startX + p*cellW;
-      svg.append("rect").attr("x",x).attr("y",y)
-        .attr("width",cellW-2).attr("height",cellH)
-        .attr("rx",3)
-        .attr("fill", errColor(err));
-    }
-  });
-
-  for(let p=0;p<nProbes;p++){
-    svg.append("text").attr("x",startX + p*cellW + (cellW-2)/2).attr("y",startY-8)
-      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray)
-      .text(p+1);
-  }
-  svg.append("text").attr("x",startX + (nProbes*cellW)/2).attr("y",startY-22)
-    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
-    .text("Probe index (shallow → deep)");
-
-  // Color legend: black → gold
-  const legX = startX, legY = startY + 4*(cellH+gapY) + 20;
-  const legW = 200, legH = 14;
-  const defs = svg.append("defs");
-  const grad = defs.append("linearGradient").attr("id","errGradMZ");
-  grad.append("stop").attr("offset","0%").attr("stop-color",MZblack);
-  grad.append("stop").attr("offset","50%").attr("stop-color",MZdkGold);
-  grad.append("stop").attr("offset","100%").attr("stop-color",MZgold);
-
-  svg.append("rect").attr("x",legX).attr("y",legY).attr("width",legW).attr("height",legH)
-    .attr("rx",3).attr("fill","url(#errGradMZ)");
-  svg.append("text").attr("x",legX).attr("y",legY+legH+14)
-    .attr("font-size",9).attr("fill",MZblack).text("High error (1.0)");
-  svg.append("text").attr("x",legX+legW).attr("y",legY+legH+14)
-    .attr("text-anchor","end").attr("font-size",9).attr("fill",MZdkGold).text("Low error (0.0)");
-
-  svg.append("text").attr("x",startX + nProbes*cellW + 30).attr("y",startY + 50)
-    .attr("font-size",12).attr("fill",MZblack).attr("font-weight",600)
-    .text("Observations:");
-  const obs = [
-    "• Smooth color gradient → monotonic",
-    "• Deeper layers improve first",
-    "• Auxiliary head slightly ahead",
-    "  of main head early on",
-    "• 1000 classes: 50% err ≫ random"
-  ];
-  obs.forEach((o,i) => {
-    svg.append("text").attr("x",startX + nProbes*cellW + 30).attr("y",startY + 72 + i*18)
-      .attr("font-size",10).attr("fill",MZgray).text(o);
-  });
-
-  return svg.node();
-}
-```
-
-::: {.callout-note}
-**Auxiliary head insight:** The auxiliary branch was observed to have slightly lower prediction error than the main head early in training — it was "leading" training, though only by a small margin.
-:::
-
-
-## Diagnosing Pathological Models {.smaller}
-
-Probes aren't just for understanding — they're a **diagnostic tool**.
-
-**Experiment:** A deliberately pathological model: 128 FC layers (128 units each) on MNIST, with a skip connection jumping from input to layer 64.
-
-```{ojs}
-//| echo: false
-skipViz = {
-  const W = 900, H = 360;
-  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
-  const MZltGold = "#FFF6DC", MZgray = "#4A4A4A", MZltGray = "#F5F2EB";
-
-  const svg = d3.create("svg")
-    .attr("viewBox",`0 0 ${W} ${H}`)
-    .style("width","100%").style("max-width",`${W}px`)
-    .style("font-family","system-ui, sans-serif");
-
-  svg.append("rect").attr("width",W).attr("height",H)
-    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
-
-  svg.append("text").attr("x",W/2).attr("y",24)
-    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
-    .text("Pathological Skip Connection — Diagnosed by Probes");
-
-  const archY = 65;
-  const nBlocks = 20;
-  const bW = 28, bH = 22, gapX = 10;
-  const totalBW = nBlocks*bW + (nBlocks-1)*gapX;
-  const archSX = (W - totalBW)/2;
-
-  for(let i=0;i<nBlocks;i++){
-    const x = archSX + i*(bW+gapX);
-    const isFirst = i<nBlocks/2;
-    svg.append("rect").attr("x",x).attr("y",archY-bH/2)
-      .attr("width",bW).attr("height",bH).attr("rx",4)
-      .attr("fill", isFirst ? MZblack : MZgold)
-      .attr("stroke", isFirst ? MZgray : MZdkGold);
-    if(i<nBlocks-1){
-      svg.append("line")
-        .attr("x1",x+bW).attr("y1",archY)
-        .attr("x2",x+bW+gapX).attr("y2",archY)
-        .attr("stroke","#ccc").attr("stroke-width",1);
-    }
-  }
-
-  // Skip connection arc (gold)
-  const skipFrom = archSX;
-  const skipTo = archSX + nBlocks/2 * (bW+gapX);
-  svg.append("path")
-    .attr("d",`M${skipFrom},${archY-bH/2} Q${(skipFrom+skipTo)/2},${archY-bH/2-35} ${skipTo},${archY-bH/2}`)
-    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",2.5)
-    .attr("marker-end","url(#arrO)");
-
-  svg.append("defs").append("marker").attr("id","arrO")
-    .attr("viewBox","0 0 10 10").attr("refX",10).attr("refY",5)
-    .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
-    .append("path").attr("d","M0 0 L10 5 L0 10z").attr("fill",MZgold);
-
-  svg.append("text").attr("x",(skipFrom+skipTo)/2).attr("y",archY-bH/2-38)
-    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
-    .text("Skip connection (input → layer 64)");
-
-  svg.append("text").attr("x",archSX + nBlocks/4*(bW+gapX)).attr("y",archY+bH/2+14)
-    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).text("Dead zone (layers 0-63)");
-  svg.append("text").attr("x",archSX + 3*nBlocks/4*(bW+gapX)).attr("y",archY+bH/2+14)
-    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZdkGold).text("Active (layers 64-127)");
-
-  // BOTTOM: animated probe error chart
-  const chartY0 = 150, chartY1 = H - 40;
-  const chartX0 = 70, chartX1 = W - 40;
-  const nPts = 128;
-
-  const probeErrors = [];
-  for(let i=0;i<nPts;i++){
-    if(i < 64){
-      probeErrors.push(0.88 + 0.04*Math.sin(i*0.1));
-    } else {
-      const t = (i-64)/63;
-      probeErrors.push(0.88 - 0.82*t*t);
-    }
-  }
-
-  const pxS = d3.scaleLinear().domain([0,nPts-1]).range([chartX0, chartX1]);
-  const pyS = d3.scaleLinear().domain([0,1]).range([chartY1, chartY0]);
-
-  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX1).attr("y2",chartY1).attr("stroke",MZgray);
-  svg.append("line").attr("x1",chartX0).attr("y1",chartY1).attr("x2",chartX0).attr("y2",chartY0).attr("stroke",MZgray);
-  svg.append("text").attr("x",(chartX0+chartX1)/2).attr("y",chartY1+24)
-    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray).text("Layer index (0 → 127)");
-  svg.append("text").attr("x",chartX0-35).attr("y",(chartY0+chartY1)/2)
-    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
-    .attr("transform",`rotate(-90,${chartX0-35},${(chartY0+chartY1)/2})`).text("Probe error");
-
-  // Dead zone shading (light gold tint)
-  svg.append("rect").attr("x",chartX0).attr("y",chartY0)
-    .attr("width",pxS(64)-chartX0).attr("height",chartY1-chartY0)
-    .attr("fill",MZltGold).attr("opacity",0.5);
-
-  svg.append("line").attr("x1",pxS(64)).attr("y1",chartY0).attr("x2",pxS(64)).attr("y2",chartY1)
-    .attr("stroke",MZgold).attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
-  svg.append("text").attr("x",pxS(64)+4).attr("y",chartY0+12)
-    .attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600).text("Skip lands here");
-
-  const lineFn = d3.line().curve(d3.curveMonotoneX);
-  const allPts = probeErrors.map((e,i) => [pxS(i), pyS(e)]);
-
-  const pathEl = svg.append("path").attr("fill","none").attr("stroke",MZblack).attr("stroke-width",2);
-  const animDot = svg.append("circle").attr("r",4).attr("fill",MZgold).attr("stroke",MZdkGold).attr("stroke-width",1);
-
-  let frame = 0;
-  function anim(){
-    frame++;
-    const period = 600;
-    const t = (frame % period) / period;
-    const idx = Math.min(Math.floor(t * nPts), nPts-1);
-
-    const pts = allPts.filter((_,i) => i <= idx && i%2===0);
-    if(idx%2!==0) pts.push(allPts[idx]);
-    pathEl.attr("d",lineFn(pts));
-    animDot.attr("cx",allPts[idx][0]).attr("cy",allPts[idx][1]);
-
-    requestAnimationFrame(anim);
-  }
-  anim();
-
-  return svg.node();
-}
-```
-
-**The probe reveals:** The first 64 layers are **completely dead** — flat high error. The skip connection let the model bypass them entirely. Without probes, this failure would be invisible from the final loss alone.
 
 
 ## Other Applications & Extensions {.smaller}
@@ -1279,6 +1241,1854 @@ extensionViz = {
 
 :::
 :::
+
+
+
+## From Vision Probes to LLM Probes {.smaller}
+
+Alain & Bengio showed probes reveal structure in **vision models**. Can the same idea work for **language models**?
+
+::: {.columns}
+::: {.column width="50%"}
+
+**The debate on LLMs:**
+
+- One view: LLMs learn a massive collection of **surface correlations** but lack any coherent understanding 
+- Alternative: LLMs, through compressing data, learn **coherent internal models** of the process that generated the text — a world model
+
+**Gurnee & Tegmark's approach:** Ty to extract an **actual map of the world** and a **timeline of history** from inside an LLM's hidden layers.
+
+They use **linear regression probes** (extending Alain & Bengio's classification probes) on the **Llama-2** (7B–70B) and **Pythia** (160M–6.9B) model families.
+
+**Approach:** Train linear regression probes on internal activations to predict real-world coordinates (latitude/longitude) or timestamps.
+
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+transitionViz = {
+  const W = 440, H = 300;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  // Left: Vision model
+  const lx = 80, ly = 60;
+  svg.append("rect").attr("x",lx-40).attr("y",ly-20).attr("width",80).attr("height",40).attr("rx",6)
+    .attr("fill",MZblack).attr("stroke",MZgold);
+  svg.append("text").attr("x",lx).attr("y",ly+1).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",10).attr("font-weight",600)
+    .text("CNN");
+  svg.append("text").attr("x",lx).attr("y",ly+32).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).text("Class labels");
+  svg.append("text").attr("x",lx).attr("y",ly+46).attr("text-anchor","middle")
+    .attr("font-size",8).attr("fill",MZdkGold).text("(cat, dog, car...)");
+
+  // Right: LLM
+  const rx = 360, ry = 60;
+  svg.append("rect").attr("x",rx-40).attr("y",ry-20).attr("width",80).attr("height",40).attr("rx",6)
+    .attr("fill",MZgold).attr("stroke",MZdkGold);
+  svg.append("text").attr("x",rx).attr("y",ry+1).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZblack).attr("font-size",10).attr("font-weight",600)
+    .text("LLM");
+  svg.append("text").attr("x",rx).attr("y",ry+32).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).text("Space & Time");
+  svg.append("text").attr("x",rx).attr("y",ry+46).attr("text-anchor","middle")
+    .attr("font-size",8).attr("fill",MZdkGold).text("(lat/lon, year...)");
+
+  // Arrow
+  svg.append("line").attr("x1",lx+45).attr("y1",ly).attr("x2",rx-45).attr("y2",ry)
+    .attr("stroke",MZdkGold).attr("stroke-width",2).attr("marker-end","url(#arrTr)");
+  svg.append("defs").append("marker").attr("id","arrTr")
+    .attr("viewBox","0 0 10 10").attr("refX",9).attr("refY",5)
+    .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+    .append("path").attr("d","M0 0 L10 5 L0 10z").attr("fill",MZdkGold);
+  svg.append("text").attr("x",W/2).attr("y",ly-2).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).attr("font-weight",600).text("same idea, new domain");
+
+  // Bottom: key shift
+  const shifts = [
+    {y:140, from:"Classification probe", to:"Regression probe"},
+    {y:168, from:"Discrete labels", to:"Continuous coordinates"},
+    {y:196, from:"Vision (images)", to:"Language (text)"},
+    {y:224, from:"softmax + CE", to:"Ridge regression"},
+  ];
+  shifts.forEach(s => {
+    svg.append("text").attr("x",110).attr("y",s.y).attr("text-anchor","end")
+      .attr("font-size",10).attr("fill",MZblack).text(s.from);
+    svg.append("text").attr("x",W/2).attr("y",s.y).attr("text-anchor","middle")
+      .attr("font-size",12).attr("fill",MZgold).attr("font-weight",700).text("→");
+    svg.append("text").attr("x",330).attr("y",s.y).attr("text-anchor","start")
+      .attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",600).text(s.to);
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",260).attr("text-anchor","middle")
+    .attr("font-size",11).attr("fill",MZblack).attr("font-weight",700)
+    .text("Gurnee & Tegmark (ICLR 2024)");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Six Datasets Across Space and Time {.smaller}
+
+Three **spatial** datasets and three **temporal** datasets, each at a different scale.
+
+```{ojs}
+//| echo: false
+datasetsViz = {
+  const W = 900, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Six Datasets Spanning Multiple Scales");
+
+  // Space datasets (left)
+  const spaceData = [
+    {name:"World", count:"39,585", examples:"Los Angeles, Caspian Sea, St. Peter's Basilica", scale:"Global", icon:"🌍"},
+    {name:"USA", count:"29,997", examples:"Fenway Park, Columbia University, Riverside County", scale:"National", icon:"🇺🇸"},
+    {name:"NYC", count:"19,838", examples:"Borden Ave Bridge, Trump International Hotel", scale:"City", icon:"🏙️"},
+  ];
+
+  // Time datasets (right)
+  const timeData = [
+    {name:"Figures", count:"37,539", examples:"Cleopatra, Dante, Carl Sagan", scale:"3000 years", icon:"👤"},
+    {name:"Art", count:"31,321", examples:"Queen's Bohemian Rhapsody, Stephen King's It", scale:"1950–2020", icon:"🎬"},
+    {name:"Headlines", count:"28,389", examples:"NYT front page headlines", scale:"2010–2020", icon:"📰"},
+  ];
+
+  // Section headers
+  svg.append("text").attr("x",225).attr("y",55).attr("text-anchor","middle")
+    .attr("font-size",13).attr("fill",MZdkGold).attr("font-weight",700).text("📍 SPACE");
+  svg.append("text").attr("x",675).attr("y",55).attr("text-anchor","middle")
+    .attr("font-size",13).attr("fill",MZdkGold).attr("font-weight",700).text("⏰ TIME");
+
+  // Divider
+  svg.append("line").attr("x1",W/2).attr("y1",45).attr("x2",W/2).attr("y2",H-20)
+    .attr("stroke",MZdkGold).attr("stroke-width",1).attr("stroke-dasharray","4,3");
+
+  function drawCard(d, x, y, w) {
+    svg.append("rect").attr("x",x).attr("y",y).attr("width",w).attr("height",72).attr("rx",6)
+      .attr("fill","white").attr("stroke",MZdkGold).attr("stroke-width",0.8);
+    svg.append("text").attr("x",x+10).attr("y",y+18)
+      .attr("font-size",20).text(d.icon);
+    svg.append("text").attr("x",x+38).attr("y",y+16)
+      .attr("font-size",12).attr("fill",MZblack).attr("font-weight",700).text(d.name);
+    svg.append("text").attr("x",x+38).attr("y",y+32)
+      .attr("font-size",9).attr("fill",MZgray).text(d.count + " entities  •  " + d.scale);
+    svg.append("text").attr("x",x+10).attr("y",y+52)
+      .attr("font-size",8).attr("fill",MZgray).attr("font-style","italic").text(d.examples);
+  }
+
+  spaceData.forEach((d,i) => drawCard(d, 20, 70 + i*85, 420));
+  timeData.forEach((d,i) => drawCard(d, 460, 70 + i*85, 420));
+
+  return svg.node();
+}
+```
+
+
+## Method: Ridge Regression Probes {.smaller}
+
+**Key shift from Alain & Bengio:** Instead of classification (softmax), use **linear ridge regression** to predict continuous targets.
+
+$$\hat{W} = \arg\min_W \|Y - AW\|^2_2 + \lambda \|W\|^2_2 = (A^TA + \lambda I)^{-1}A^TY$$
+
+where $A \in \mathbb{R}^{n \times d_{model}}$ is the activation matrix and $Y$ contains lat/lon or timestamps.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Process for each entity:**
+
+1. Feed entity name through the LLM (e.g. "Los Angeles")
+2. Extract hidden state at the **last token** for each layer
+3. This gives an $n \times d_{model}$ activation dataset per layer
+4. Fit ridge regression to predict coordinates
+5. Evaluate on held-out test set
+
+**Evaluation metrics:** $R^2$, Spearman rank correlation
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+methodViz = {
+  const W = 420, H = 300;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Probing Pipeline");
+
+  const steps = [
+    {y:50, label:'"Los Angeles"', sub:"Entity name"},
+    {y:100, label:"Llama-2-70B", sub:"Forward pass"},
+    {y:150, label:"Layer k activations", sub:"h ∈ ℝ⁸¹⁹²"},
+    {y:200, label:"Ridge regression", sub:"Ŷ = AŴ"},
+    {y:250, label:"(34.05°N, 118.24°W)", sub:"Predicted coordinates"},
+  ];
+
+  steps.forEach((s,i) => {
+    const isFirst = i===0, isLast = i===steps.length-1;
+    svg.append("rect").attr("x",W/2-90).attr("y",s.y-16).attr("width",180).attr("height",32).attr("rx",6)
+      .attr("fill", isFirst||isLast ? MZgold : MZblack)
+      .attr("stroke", isFirst||isLast ? MZdkGold : MZgold).attr("stroke-width",1);
+    svg.append("text").attr("x",W/2).attr("y",s.y-2)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", isFirst||isLast ? MZblack : MZgold).attr("font-size",10).attr("font-weight",600)
+      .text(s.label);
+    // sub label to the right
+    svg.append("text").attr("x",W/2+100).attr("y",s.y)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZgray)
+      .text(s.sub);
+
+    if(i < steps.length-1){
+      svg.append("line").attr("x1",W/2).attr("y1",s.y+16).attr("x2",W/2).attr("y2",steps[i+1].y-16)
+        .attr("stroke",MZdkGold).attr("stroke-width",1.5);
+    }
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## R² Across Layers and Models {.smaller}
+
+**Core result:** Spatial and temporal features are linearly recoverable from LLM activations. Quality builds in early layers, plateaus around the midpoint. Larger models perform better.
+
+```{ojs}
+//| echo: false
+r2Viz = {
+  const W = 920, H = 440;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",18)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Out-of-sample R² for Linear Probes");
+
+  const charts = [
+    {title:"World Map",    row:0, col:0, llama:[0.88,0.90,0.91], pythia:[0.82,0.78,0.72,0.68,0.55,0.38]},
+    {title:"USA Map",      row:0, col:1, llama:[0.80,0.83,0.86], pythia:[0.72,0.65,0.55,0.48,0.35,0.20]},
+    {title:"NYC Map",      row:0, col:2, llama:[0.22,0.24,0.36], pythia:[0.18,0.14,0.12,0.10,0.08,0.06]},
+    {title:"Historical",   row:1, col:0, llama:[0.78,0.80,0.84], pythia:[0.75,0.68,0.62,0.55,0.42,0.30]},
+    {title:"Entertainment",row:1, col:1, llama:[0.79,0.81,0.89], pythia:[0.76,0.70,0.60,0.52,0.38,0.22]},
+    {title:"Headlines",    row:1, col:2, llama:[0.56,0.65,0.75], pythia:[0.52,0.45,0.40,0.38,0.34,0.30]},
+  ];
+
+  const llamaModels = [
+    {label:"Llama-2-7b",  color:MZgray,   width:1.8, dash:""},
+    {label:"Llama-2-13b", color:MZdkGold,  width:2.0, dash:""},
+    {label:"Llama-2-70b", color:MZgold,    width:2.5, dash:""},
+  ];
+  const pythiaModels = [
+    {label:"Pythia-6.9b", color:"#B8860B", width:1.2, dash:"6,3"},
+    {label:"Pythia-2.8b", color:"#999",    width:1.0, dash:"6,3"},
+    {label:"Pythia-1.4b", color:"#aaa",    width:0.9, dash:"4,3"},
+    {label:"Pythia-1b",   color:"#bbb",    width:0.8, dash:"4,3"},
+    {label:"Pythia-410m", color:"#ccc",    width:0.7, dash:"3,2"},
+    {label:"Pythia-160m", color:"#ddd",    width:0.6, dash:"3,2"},
+  ];
+
+  const cW = 270, cH = 150, gapX = 20, gapY = 25;
+  const gridX0 = 55, gridY0 = 32;
+  const nPts = 40;
+  const lineFn = d3.line().curve(d3.curveBasis);
+
+  const allAnimPaths = [];
+
+  charts.forEach(ch => {
+    const cx0 = gridX0 + ch.col * (cW + gapX);
+    const cy0 = gridY0 + ch.row * (cH + gapY);
+    const cx1 = cx0 + cW, cy1 = cy0 + cH;
+    const padL = 28, padB = 18;
+
+    const pxS = d3.scaleLinear().domain([0,1]).range([cx0+padL, cx1-5]);
+
+    // Axes
+    svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx1-5).attr("y2",cy1-padB)
+      .attr("stroke","#ccc").attr("stroke-width",0.6);
+    svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx0+padL).attr("y2",cy0+18)
+      .attr("stroke","#ccc").attr("stroke-width",0.6);
+
+    // Title
+    svg.append("text").attr("x",cx0+cW/2).attr("y",cy0+12).attr("text-anchor","middle")
+      .attr("font-size",10).attr("fill",MZblack).attr("font-weight",600).text(ch.title);
+
+    // Y ticks
+    const yMax = ch.title === "NYC Map" ? 0.4 : 1.0;
+    const pyAdj = d3.scaleLinear().domain([0,yMax]).range([cy1-padB, cy0+18]);
+
+    const yTicks = ch.title === "NYC Map" ? [0,0.1,0.2,0.3] : [0,0.2,0.4,0.6,0.8];
+    yTicks.forEach(v => {
+      svg.append("text").attr("x",cx0+padL-4).attr("y",pyAdj(v)+1).attr("text-anchor","end")
+        .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+    });
+
+    // X ticks
+    [0,0.25,0.5,0.75,1.0].forEach(v => {
+      svg.append("text").attr("x",pxS(v)).attr("y",cy1-padB+10).attr("text-anchor","middle")
+        .attr("font-size",7).attr("fill",MZblack).text(v.toFixed(2));
+    });
+
+    if(ch.col===0){
+      svg.append("text").attr("x",cx0+6).attr("y",(cy0+18+cy1-padB)/2)
+        .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+        .attr("transform",`rotate(-90,${cx0+6},${(cy0+18+cy1-padB)/2})`).text("test R²");
+    }
+    if(ch.row===1){
+      svg.append("text").attr("x",cx0+cW/2).attr("y",cy1-2).attr("text-anchor","middle")
+        .attr("font-size",8).attr("fill",MZblack).text("model depth");
+    }
+
+    // Generate sigmoid curve for each model
+    function makeCurve(peak, midShift) {
+      return d3.range(nPts).map(i => {
+        const t = i/(nPts-1);
+        const steepness = 8 + midShift * 2;
+        const mid = 0.22 + midShift * 0.03;
+        const r2val = Math.min(peak, peak * (1 / (1 + Math.exp(-steepness*(t-mid)))));
+        return [pxS(t), pyAdj(Math.min(r2val, yMax))];
+      });
+    }
+
+    // Draw Llama curves (solid)
+    llamaModels.forEach((m, mi) => {
+      const peak = ch.llama[mi];
+      const pts = makeCurve(peak, 2 - mi);
+      const path = svg.append("path")
+        .attr("fill","none").attr("stroke",m.color).attr("stroke-width",m.width);
+      if(m.dash) path.attr("stroke-dasharray",m.dash);
+      allAnimPaths.push({path, pts});
+    });
+
+    // Draw Pythia curves (dashed, grays)
+    pythiaModels.forEach((m, mi) => {
+      const peak = ch.pythia[mi];
+      const pts = makeCurve(peak, -mi);
+      const path = svg.append("path")
+        .attr("fill","none").attr("stroke",m.color).attr("stroke-width",m.width);
+      if(m.dash) path.attr("stroke-dasharray",m.dash);
+      allAnimPaths.push({path, pts});
+    });
+  });
+
+  // Legend — two rows at the bottom
+  const legY = gridY0 + 2*(cH+gapY) + 4;
+  const legX0 = gridX0 + 10;
+
+  // Row 1: Llama models (solid lines)
+  svg.append("text").attr("x",legX0).attr("y",legY+6)
+    .attr("font-size",8).attr("fill",MZblack).attr("font-weight",700).text("Llama-2");
+
+  llamaModels.forEach((m,i) => {
+    const x = legX0 + 55 + i*110;
+    svg.append("line").attr("x1",x).attr("y1",legY+5).attr("x2",x+18).attr("y2",legY+5)
+      .attr("stroke",m.color).attr("stroke-width",m.width);
+    svg.append("text").attr("x",x+22).attr("y",legY+6)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(m.label);
+  });
+
+  // Row 2: Pythia models (dashed lines)
+  const legY2 = legY + 16;
+  svg.append("text").attr("x",legX0).attr("y",legY2+6)
+    .attr("font-size",8).attr("fill",MZgray).attr("font-weight",700).text("Pythia");
+
+  pythiaModels.forEach((m,i) => {
+    const x = legX0 + 55 + i*135;
+    svg.append("line").attr("x1",x).attr("y1",legY2+5).attr("x2",x+18).attr("y2",legY2+5)
+      .attr("stroke",m.color).attr("stroke-width",m.width).attr("stroke-dasharray",m.dash);
+    svg.append("text").attr("x",x+22).attr("y",legY2+6)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZgray).text(m.label);
+  });
+
+  // Animation
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 200;
+    const t = (frame % period) / period;
+    const visiblePts = Math.max(2, Math.floor(t * nPts));
+
+    allAnimPaths.forEach(({path, pts}) => {
+      path.attr("d", lineFn(pts.slice(0, visiblePts)));
+    });
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+
+## Linear vs Nonlinear Probes {.smaller}
+
+**Critical test:** Are these features genuinely **linear**, or would a nonlinear probe do much better?
+
+They compare linear ridge regression against a 256-neuron MLP probe at 60% layer depth.
+
+```{ojs}
+//| echo: false
+linearVsNonlinear = {
+  const W = 920, H = 360;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Linear vs Nonlinear (MLP) Probes — R² at 60% Depth ");
+
+  const datasets = ["World","USA","NYC","Historical","Entertain.","Headlines"];
+
+  const data = [
+    {model:"7B",  linear:[0.881,0.799,0.219,0.785,0.788,0.564], mlp:[0.897,0.819,0.204,0.775,0.746,0.467], color:MZgray},
+    {model:"13B", linear:[0.896,0.825,0.237,0.804,0.806,0.645], mlp:[0.916,0.824,0.230,0.818,0.808,0.656], color:MZdkGold},
+    {model:"70B", linear:[0.911,0.864,0.359,0.835,0.885,0.746], mlp:[0.926,0.869,0.312,0.839,0.884,0.739], color:MZgold},
+  ];
+
+  const barAreaX0 = 90, barAreaX1 = W - 30;
+  const barAreaW = barAreaX1 - barAreaX0;
+  const barY0 = 42, barY1 = H - 75;
+
+  const yS = d3.scaleLinear().domain([0,1]).range([barY1, barY0]);
+
+  // Axes
+  svg.append("line").attr("x1",barAreaX0).attr("y1",barY1).attr("x2",barAreaX1).attr("y2",barY1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",barAreaX0).attr("y1",barY1).attr("x2",barAreaX0).attr("y2",barY0).attr("stroke",MZgray);
+
+  [0,0.2,0.4,0.6,0.8,1.0].forEach(v => {
+    svg.append("line").attr("x1",barAreaX0-3).attr("y1",yS(v)).attr("x2",barAreaX0).attr("y2",yS(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",barAreaX0).attr("y1",yS(v)).attr("x2",barAreaX1).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",barAreaX0-6).attr("y",yS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",barAreaX0-35).attr("y",(barY0+barY1)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${barAreaX0-35},${(barY0+barY1)/2})`).text("R²");
+
+  const datasetW = barAreaW / datasets.length;
+  const pairW = datasetW / 3.8;
+  const singleBarW = pairW * 0.36;
+
+  datasets.forEach((ds, di) => {
+    const groupX = barAreaX0 + di * datasetW;
+
+    // Dataset label
+    svg.append("text").attr("x",groupX + datasetW/2).attr("y",barY1+14).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",MZblack).text(ds);
+
+    // 3 model pairs
+    data.forEach((md, mi) => {
+      const pairX = groupX + 8 + mi * (pairW + 3);
+      const cx = pairX + pairW/2;
+
+      // Linear bar (solid)
+      const h1 = barY1 - yS(md.linear[di]);
+      svg.append("rect").attr("x",cx - singleBarW - 1).attr("y",yS(md.linear[di]))
+        .attr("width",singleBarW).attr("height",h1).attr("rx",1.5)
+        .attr("fill",md.color).attr("opacity",0.9);
+
+      // MLP bar (outline only)
+      const h2 = barY1 - yS(md.mlp[di]);
+      svg.append("rect").attr("x",cx + 1).attr("y",yS(md.mlp[di]))
+        .attr("width",singleBarW).attr("height",h2).attr("rx",1.5)
+        .attr("fill","none")
+        .attr("stroke",md.color).attr("stroke-width",1.5);
+
+      // Model label
+      svg.append("text").attr("x",cx).attr("y",barY1+26).attr("text-anchor","middle")
+        .attr("font-size",6).attr("fill",MZgray).text(md.model);
+    });
+
+    // Separator
+    if(di < datasets.length - 1){
+      svg.append("line")
+        .attr("x1",groupX + datasetW - 2).attr("y1",barY0)
+        .attr("x2",groupX + datasetW - 2).attr("y2",barY1)
+        .attr("stroke","#ddd").attr("stroke-width",0.5);
+    }
+  });
+
+  // Legend row 1: probe type
+  const legY = barY1 + 36;
+  const legX = barAreaX0 + 60;
+
+  svg.append("rect").attr("x",legX).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold).attr("opacity",0.9);
+  svg.append("text").attr("x",legX+20).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Solid = Linear probe");
+
+  svg.append("rect").attr("x",legX+160).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",1.5);
+  svg.append("text").attr("x",legX+180).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Outline = MLP probe");
+
+  // Legend row 2: model colors
+  const legY2 = legY + 18;
+
+  svg.append("rect").attr("x",legX).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgray);
+  svg.append("text").attr("x",legX+18).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-7B");
+
+  svg.append("rect").attr("x",legX+120).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZdkGold);
+  svg.append("text").attr("x",legX+138).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-13B");
+
+  svg.append("rect").attr("x",legX+260).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold);
+  svg.append("text").attr("x",legX+278).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-70B");
+
+  return svg.node();
+}
+```
+
+
+**Conclusion:** Nonlinear probes provide **minimal improvement** — space and time are represented **linearly** in LLMs, extending the linear representation hypothesis to continuous features.
+
+
+
+## Sensitivity to Prompting  {.smaller}
+
+Does the **context** around an entity name affect how well its location/time can be recovered?
+
+::: {.columns}
+::: {.column width="55%"}
+
+**Prompts tested:**
+
+- **Empty:** just the entity name ("Los Angeles")
+- **Relevant:** "What is the latitude and longitude of Los Angeles"
+- **Random:** 10 random tokens prepended
+- **All caps:** "LOS ANGELES"
+
+
+**Findings:**
+
+- Explicit prompting makes **little to no difference**
+- Random distracting tokens **degrade** performance significantly
+- All-caps **hurts** (likely interferes with tokenization)
+
+:::
+::: {.column width="45%"}
+
+```{ojs}
+//| echo: false
+promptViz = {
+  const W = 420, H = 320;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("World Map: R² by Prompt Type (70B)");
+
+  const prompts = [
+    {label:"empty", r2:0.88},
+    {label:"coords", r2:0.87},
+    {label:"random", r2:0.52},
+    {label:"all_caps", r2:0.72},
+  ];
+
+  const bx0 = 100, bx1 = W-30;
+  const by0 = 45, by1 = H-40;
+  const bH = (by1-by0)/prompts.length * 0.65;
+  const bGap = (by1-by0)/prompts.length;
+  const xS = d3.scaleLinear().domain([0,1]).range([bx0, bx1]);
+
+  // Grid
+  [0,0.2,0.4,0.6,0.8,1.0].forEach(v => {
+    svg.append("line").attr("x1",xS(v)).attr("y1",by0).attr("x2",xS(v)).attr("y2",by1)
+      .attr("stroke","#eee");
+    svg.append("text").attr("x",xS(v)).attr("y",by1+14).attr("text-anchor","middle")
+      .attr("font-size",8).attr("fill",MZgray).text(v.toFixed(1));
+  });
+
+  prompts.forEach((p,i) => {
+    const y = by0 + i*bGap + bGap/2 - bH/2;
+    const w = xS(p.r2) - bx0;
+    const isGood = p.r2 > 0.7;
+
+    svg.append("rect").attr("x",bx0).attr("y",y).attr("width",w).attr("height",bH).attr("rx",3)
+      .attr("fill", isGood ? MZgold : MZblack).attr("opacity",0.8);
+
+    svg.append("text").attr("x",bx0-6).attr("y",y+bH/2+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",10).attr("fill",MZblack).text(p.label);
+
+    svg.append("text").attr("x",bx0+w+6).attr("y",y+bH/2+1)
+      .attr("dominant-baseline","middle").attr("font-size",9)
+      .attr("fill", isGood ? MZdkGold : MZgray).attr("font-weight",600)
+      .text(p.r2.toFixed(2));
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",H-8).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).text("R² →");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## The Period Token Effect (Headlines) {.smaller}
+
+**Surprising finding:** For news headlines, probing on a **period token appended after the headline** gives better temporal predictions than probing on the last headline token itself.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**What they tested:**
+
+- **empty:** just the headline text
+- **empty_wo_period:** headline without period, last token
+- **when_w_period:** "When was this published?" + headline + "."
+- **when_wo_period:** "When was this published?" + headline
+
+**What this suggests:**
+
+Period tokens act as **summary positions** — the model uses them to consolidate information about the preceding sentence. When the model hits ".", it compresses the key facts (including temporal context) into that token's representation.
+
+This is consistent with how autoregressive models work — special punctuation tokens often serve as natural "checkpoint" positions where information gets aggregated.
+:::
+::: {.column width="50%"}
+```{ojs}
+//| echo: false
+periodViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Headlines: R² by Prompt & Token (70B)");
+
+  // Data approximated from paper Figure 3 (Headlines panel)
+  const prompts = [
+    {label:"when + period", r2:0.72, token:"probe on '.'"},
+    {label:"empty + period", r2:0.70, token:"probe on '.'"},
+    {label:"empty", r2:0.65, token:"probe on last word"},
+    {label:"when (no period)", r2:0.62, token:"probe on last word"},
+    {label:"random", r2:0.42, token:"probe on last word"},
+  ];
+
+  const bx0 = 155, bx1 = W - 20;
+  const by0 = 42, by1 = H - 80;
+  const bH = (by1 - by0) / prompts.length * 0.7;
+  const bGap = (by1 - by0) / prompts.length;
+  const xS = d3.scaleLinear().domain([0, 0.8]).range([bx0, bx1]);
+
+  // Grid lines
+  [0, 0.2, 0.4, 0.6, 0.8].forEach(v => {
+    svg.append("line").attr("x1",xS(v)).attr("y1",by0-5).attr("x2",xS(v)).attr("y2",by1+5)
+      .attr("stroke","#eee");
+    svg.append("text").attr("x",xS(v)).attr("y",by1+18).attr("text-anchor","middle")
+      .attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",(bx0+bx1)/2).attr("y",by1+32).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZblack).text("R² →");
+
+  prompts.forEach((p, i) => {
+    const y = by0 + i * bGap + bGap/2 - bH/2;
+    const w = xS(p.r2) - bx0;
+    const hasPeriod = p.token.includes("'.'");
+
+    // Bar
+    svg.append("rect").attr("x",bx0).attr("y",y).attr("width",w).attr("height",bH).attr("rx",3)
+      .attr("fill", hasPeriod ? MZgold : MZblack).attr("opacity", 0.8);
+
+    // Prompt label (left)
+    svg.append("text").attr("x",bx0 - 6).attr("y",y + bH/2 + 1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack)
+      .text(p.label);
+
+    // R² value (right of bar)
+    svg.append("text").attr("x",bx0 + w + 6).attr("y",y + bH/2 + 1)
+      .attr("dominant-baseline","middle").attr("font-size",9)
+      .attr("fill", hasPeriod ? MZdkGold : MZgray).attr("font-weight",600)
+      .text(p.r2.toFixed(2));
+  });
+
+  // Annotation: bracket showing the period boost
+  const bracketX = bx1 + 5;
+  const y1 = by0 + 0 * bGap + bGap/2;
+  const y2 = by0 + 1 * bGap + bGap/2;
+  const y3 = by0 + 2 * bGap + bGap/2;
+
+  // Legend
+  const legY = by1 + 45;
+  svg.append("rect").attr("x",bx0).attr("y",legY-5).attr("width",14).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold).attr("opacity",0.8);
+  svg.append("text").attr("x",bx0+18).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack)
+    .text("Probed on period token");
+
+  svg.append("rect").attr("x",bx0+170).attr("y",legY-5).attr("width",14).attr("height",10).attr("rx",2)
+    .attr("fill",MZblack).attr("opacity",0.8);
+  svg.append("text").attr("x",bx0+188).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack)
+    .text("Probed on last word token");
+
+  // Animated highlight: pulsing the period token bars
+  const periodBars = svg.selectAll(".period-highlight").data([0,1]).join("rect")
+    .attr("class","period-highlight")
+    .attr("x",bx0).attr("width",0).attr("height",bH).attr("rx",3)
+    .attr("fill",MZgold).attr("opacity",0);
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const pulse = 0.15 + 0.15 * Math.sin(frame * 0.05);
+    periodBars.each(function(d,i){
+      const y = by0 + i * bGap + bGap/2 - bH/2;
+      const w = xS(prompts[i].r2) - bx0;
+      d3.select(this).attr("y",y).attr("width",w).attr("opacity",pulse);
+    });
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+**Implication:** This suggests periods (and possibly other punctuation) serve as natural **information aggregation points** in LLMs — the model compresses preceding context into these positions, making them richer targets for probing.
+
+
+
+
+## Robustness: Block Holdout  {.smaller}
+
+**Concern:** Could the probe just be learning a lookup table? E.g., "entity is in France → predict centroid of France"?
+
+**Test:** Hold out an **entire country/state/decade** from training, then predict its entities.
+
+```{ojs}
+//| echo: false
+blockHoldout = {
+  const W = 920, H = 380;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Block Holdout Generalization — Proximity Error");
+
+  const datasets = ["World","USA","NYC","Historical","Entertainment","Headlines"];
+
+  // Data from paper Table 3 — all three models, nominal vs held out
+  const models = [
+    {model:"7B",  color:MZgray,
+     nominal:[0.071, 0.144, 0.331, 0.129, 0.147, 0.258],
+     heldout:[0.170, 0.192, 0.473, 0.133, 0.158, 0.264]},
+    {model:"13B", color:MZdkGold,
+     nominal:[0.068, 0.144, 0.319, 0.121, 0.141, 0.223],
+     heldout:[0.156, 0.189, 0.470, 0.126, 0.152, 0.235]},
+    {model:"70B", color:MZgold,
+     nominal:[0.071, 0.121, 0.262, 0.115, 0.105, 0.182],
+     heldout:[0.164, 0.188, 0.433, 0.119, 0.122, 0.200]},
+  ];
+
+  const bx0 = 100, bx1 = W - 30;
+  const barAreaW = bx1 - bx0;
+  const by0 = 45, by1 = H - 75;
+  const yS = d3.scaleLinear().domain([0, 0.5]).range([by1, by0]);
+
+  // Axes
+  svg.append("line").attr("x1",bx0).attr("y1",by1).attr("x2",bx1).attr("y2",by1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",bx0).attr("y1",by1).attr("x2",bx0).attr("y2",by0).attr("stroke",MZgray);
+
+  // Random baseline
+  svg.append("line").attr("x1",bx0).attr("y1",yS(0.5)).attr("x2",bx1).attr("y2",yS(0.5))
+    .attr("stroke","#ccc").attr("stroke-dasharray","6,3");
+  svg.append("text").attr("x",bx0+5).attr("y",yS(0.5)-8)
+    .attr("font-size",8).attr("fill",MZgray).text("random performance (0.5)");
+
+  // Y ticks
+  [0, 0.1, 0.2, 0.3, 0.4, 0.5].forEach(v => {
+    svg.append("line").attr("x1",bx0-3).attr("y1",yS(v)).attr("x2",bx0).attr("y2",yS(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",bx0).attr("y1",yS(v)).attr("x2",bx1).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",bx0-6).attr("y",yS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",bx0-40).attr("y",(by0+by1)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${bx0-40},${(by0+by1)/2})`).text("Proximity error (lower = better)");
+
+  // Each dataset: 3 pairs (one per model), each pair = nominal + held out
+  const datasetW = barAreaW / datasets.length;
+  const pairW = datasetW / 3.8;
+  const singleBarW = pairW * 0.36;
+
+  datasets.forEach((ds, di) => {
+    const groupX = bx0 + di * datasetW;
+
+    // Dataset label
+    svg.append("text").attr("x",groupX + datasetW/2).attr("y",by1+14).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",MZblack).text(ds);
+
+    // 3 model pairs
+    models.forEach((md, mi) => {
+      const pairX = groupX + 8 + mi * (pairW + 3);
+      const cx = pairX + pairW/2;
+
+      // Nominal bar (solid)
+      const h1 = by1 - yS(md.nominal[di]);
+      svg.append("rect").attr("x",cx - singleBarW - 1).attr("y",yS(md.nominal[di]))
+        .attr("width",singleBarW).attr("height",h1).attr("rx",1.5)
+        .attr("fill",md.color).attr("opacity",0.9);
+
+      // Held out bar (outline)
+      const h2 = by1 - yS(md.heldout[di]);
+      svg.append("rect").attr("x",cx + 1).attr("y",yS(md.heldout[di]))
+        .attr("width",singleBarW).attr("height",h2).attr("rx",1.5)
+        .attr("fill","none")
+        .attr("stroke",md.color).attr("stroke-width",1.5);
+
+      // Model label
+      svg.append("text").attr("x",cx).attr("y",by1+26).attr("text-anchor","middle")
+        .attr("font-size",6).attr("fill",MZgray).text(md.model);
+    });
+
+    // Separator
+    if(di < datasets.length - 1){
+      svg.append("line")
+        .attr("x1",groupX + datasetW - 2).attr("y1",by0)
+        .attr("x2",groupX + datasetW - 2).attr("y2",by1)
+        .attr("stroke","#ddd").attr("stroke-width",0.5);
+    }
+  });
+
+  // Legend row 1: nominal vs held out
+  const legY = by1 + 36;
+  const legX = bx0 + 60;
+
+  svg.append("rect").attr("x",legX).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold).attr("opacity",0.9);
+  svg.append("text").attr("x",legX+20).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Solid = Nominal (included in training)");
+
+  svg.append("rect").attr("x",legX+280).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",1.5);
+  svg.append("text").attr("x",legX+300).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Outline = Held out (entire block removed)");
+
+  // Legend row 2: model colors
+  const legY2 = legY + 18;
+
+  svg.append("rect").attr("x",legX).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgray);
+  svg.append("text").attr("x",legX+18).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-7B");
+
+  svg.append("rect").attr("x",legX+120).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZdkGold);
+  svg.append("text").attr("x",legX+138).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-13B");
+
+  svg.append("rect").attr("x",legX+260).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold);
+  svg.append("text").attr("x",legX+278).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-70B");
+
+  return svg.node();
+}
+```
+
+**Result:** Performance drops but stays **well above random** (0.5). The probe places held-out entities in the correct **relative** position but memorizes absolute coordinates from training data.
+
+
+## Cross-Entity Generalization  {.smaller}
+
+**Another concern:** Does the model use a **unified** spatial representation, or separate ones for cities vs landmarks vs colleges?
+
+**Test:** Train the probe on only cities, then test on natural landmarks (and vice versa).
+
+```{ojs}
+//| echo: false
+crossEntity = {
+  const W = 920, H = 380;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Cross-Entity Generalization — Proximity Error");
+
+  const datasets = ["World","USA","NYC","Historical","Entertainment","Headlines"];
+
+  // Data from paper Table 4 — all three models
+  const models = [
+    {model:"7B", color:MZgray,
+     nominal:[0.120, 0.206, 0.313, 0.164, 0.224, 0.199],
+     heldout:[0.151, 0.262, 0.367, 0.168, 0.305, 0.289]},
+    {model:"13B", color:MZdkGold,
+     nominal:[0.117, 0.197, 0.310, 0.153, 0.207, 0.171],
+     heldout:[0.147, 0.259, 0.377, 0.159, 0.283, 0.266]},
+    {model:"70B", color:MZgold,
+     nominal:[0.113, 0.173, 0.266, 0.149, 0.159, 0.144],
+     heldout:[0.147, 0.203, 0.322, 0.149, 0.271, 0.219]},
+  ];
+
+  const bx0 = 100, bx1 = W - 30;
+  const barAreaW = bx1 - bx0;
+  const by0 = 45, by1 = H - 75;
+  const yS = d3.scaleLinear().domain([0, 0.5]).range([by1, by0]);
+
+  // Axes
+  svg.append("line").attr("x1",bx0).attr("y1",by1).attr("x2",bx1).attr("y2",by1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",bx0).attr("y1",by1).attr("x2",bx0).attr("y2",by0).attr("stroke",MZgray);
+
+  // Random baseline
+  svg.append("line").attr("x1",bx0).attr("y1",yS(0.5)).attr("x2",bx1).attr("y2",yS(0.5))
+    .attr("stroke","#ccc").attr("stroke-dasharray","6,3");
+  svg.append("text").attr("x",bx0+5).attr("y",yS(0.5)-8)
+    .attr("font-size",8).attr("fill",MZgray).text("random performance (0.5)");
+
+  // Y ticks
+  [0, 0.1, 0.2, 0.3, 0.4, 0.5].forEach(v => {
+    svg.append("line").attr("x1",bx0-3).attr("y1",yS(v)).attr("x2",bx0).attr("y2",yS(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",bx0).attr("y1",yS(v)).attr("x2",bx1).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",bx0-6).attr("y",yS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",bx0-40).attr("y",(by0+by1)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${bx0-40},${(by0+by1)/2})`).text("Proximity error (lower = better)");
+
+  // Bars: 3 pairs per dataset
+  const datasetW = barAreaW / datasets.length;
+  const pairW = datasetW / 3.8;
+  const singleBarW = pairW * 0.36;
+
+  datasets.forEach((ds, di) => {
+    const groupX = bx0 + di * datasetW;
+
+    // Dataset label
+    svg.append("text").attr("x",groupX + datasetW/2).attr("y",by1+14).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",MZblack).text(ds);
+
+    // 3 model pairs
+    models.forEach((md, mi) => {
+      const pairX = groupX + 8 + mi * (pairW + 3);
+      const cx = pairX + pairW/2;
+
+      // Nominal bar (solid)
+      const h1 = by1 - yS(md.nominal[di]);
+      svg.append("rect").attr("x",cx - singleBarW - 1).attr("y",yS(md.nominal[di]))
+        .attr("width",singleBarW).attr("height",h1).attr("rx",1.5)
+        .attr("fill",md.color).attr("opacity",0.9);
+
+      // Held out bar (outline)
+      const h2 = by1 - yS(md.heldout[di]);
+      svg.append("rect").attr("x",cx + 1).attr("y",yS(md.heldout[di]))
+        .attr("width",singleBarW).attr("height",h2).attr("rx",1.5)
+        .attr("fill","none")
+        .attr("stroke",md.color).attr("stroke-width",1.5);
+
+      // Model label
+      svg.append("text").attr("x",cx).attr("y",by1+26).attr("text-anchor","middle")
+        .attr("font-size",6).attr("fill",MZgray).text(md.model);
+    });
+
+    // Separator
+    if(di < datasets.length - 1){
+      svg.append("line")
+        .attr("x1",groupX + datasetW - 2).attr("y1",by0)
+        .attr("x2",groupX + datasetW - 2).attr("y2",by1)
+        .attr("stroke","#ddd").attr("stroke-width",0.5);
+    }
+  });
+
+  // Legend row 1: nominal vs held out
+  const legY = by1 + 36;
+  const legX = bx0 + 60;
+
+  svg.append("rect").attr("x",legX).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold).attr("opacity",0.9);
+  svg.append("text").attr("x",legX+20).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Solid = Nominal (entity type in training)");
+
+  svg.append("rect").attr("x",legX+300).attr("y",legY-5).attr("width",16).attr("height",10).attr("rx",2)
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",1.5);
+  svg.append("text").attr("x",legX+320).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Outline = Entity type fully held out");
+
+  // Legend row 2: model colors
+  const legY2 = legY + 18;
+
+  svg.append("rect").attr("x",legX).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgray);
+  svg.append("text").attr("x",legX+18).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-7B");
+
+  svg.append("rect").attr("x",legX+120).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZdkGold);
+  svg.append("text").attr("x",legX+138).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-13B");
+
+  svg.append("rect").attr("x",legX+260).attr("y",legY2-5).attr("width",12).attr("height",10).attr("rx",2)
+    .attr("fill",MZgold);
+  svg.append("text").attr("x",legX+278).attr("y",legY2+1)
+    .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Llama-2-70B");
+
+  return svg.node();
+}
+```
+
+
+**Result:** Probes **largely generalize** across entity types — a probe trained on cities works for landmarks too. This suggests a **unified** spatial representation, not separate encodings per entity type.
+
+
+
+## PCA Dimensionality Reduction  {.smaller}
+
+Despite being linear, probes have $d_{model}$ parameters (4096–8192). Could they be memorizing?
+
+**Test:** Project activations onto the top-$k$ PCA components, then retrain probes.
+
+::: {.columns}
+::: {.column width="55%"}
+
+```{ojs}
+//| echo: false
+pcaViz = {
+  const W = 920, H = 640;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",15).attr("fill",MZblack).attr("font-weight",700)
+    .text("Probes on PCA-Reduced Activations");
+
+  const dsColors = [
+    {label:"World",         color:MZgold},
+    {label:"USA",           color:MZdkGold},
+    {label:"Historical",    color:"#2d8a4e"},
+    {label:"Entertainment", color:"#c0392b"},
+    {label:"Headlines",     color:MZgray},
+  ];
+
+  const chartData = [
+    {title:"Llama-2-7b",
+     r2Peaks:   [0.88, 0.80, 0.78, 0.79, 0.56],
+     spPeaks:   [0.90, 0.85, 0.82, 0.83, 0.78]},
+    {title:"Llama-2-13b",
+     r2Peaks:   [0.90, 0.83, 0.80, 0.81, 0.65],
+     spPeaks:   [0.92, 0.88, 0.85, 0.86, 0.82]},
+    {title:"Llama-2-70b",
+     r2Peaks:   [0.91, 0.86, 0.84, 0.89, 0.75],
+     spPeaks:   [0.93, 0.90, 0.88, 0.90, 0.86]},
+  ];
+
+  const cW = 270, cH = 210, cGapX = 25, cGapY = 35;
+  const startX = 55;
+  const lineFn = d3.line().curve(d3.curveBasis);
+
+  const rows = [
+    {yLabel:"test R²", rowIdx:0, peakKey:"r2Peaks", riseSpeed:8, riseMid:0.35},
+    {yLabel:"test Spearman ρ", rowIdx:1, peakKey:"spPeaks", riseSpeed:12, riseMid:0.25},
+  ];
+
+  // Row labels on the far left
+  svg.append("text").attr("x",16).attr("y",38 + cH/2)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .attr("transform",`rotate(-90,16,${38 + cH/2})`).text("R²");
+  svg.append("text").attr("x",16).attr("y",38 + cH + cGapY + cH/2)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .attr("transform",`rotate(-90,16,${38 + cH + cGapY + cH/2})`).text("Spearman ρ");
+
+  rows.forEach(row => {
+    chartData.forEach((cm, ci) => {
+      const cx0 = startX + ci * (cW + cGapX);
+      const cy0 = 35 + row.rowIdx * (cH + cGapY);
+      const cy1 = cy0 + cH;
+      const padL = 34, padB = 24;
+
+      const pxS = d3.scaleLog().domain([3, 200]).range([cx0+padL, cx0+cW-5]);
+      const pyS = d3.scaleLinear().domain([0, 1]).range([cy1-padB, cy0+20]);
+
+      // Axes
+      svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx0+cW-5).attr("y2",cy1-padB)
+        .attr("stroke","#ccc").attr("stroke-width",0.6);
+      svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx0+padL).attr("y2",cy0+20)
+        .attr("stroke","#ccc").attr("stroke-width",0.6);
+
+      // Title only on top row
+      if(row.rowIdx === 0){
+        svg.append("text").attr("x",cx0+cW/2).attr("y",cy0+12).attr("text-anchor","middle")
+          .attr("font-size",13).attr("fill",MZblack).attr("font-weight",600).text(cm.title);
+      }
+
+      // Y ticks
+      [0, 0.2, 0.4, 0.6, 0.8].forEach(v => {
+        svg.append("text").attr("x",cx0+padL-5).attr("y",pyS(v)+1).attr("text-anchor","end")
+          .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text(v.toFixed(1));
+      });
+
+      // X ticks
+      [3, 10, 30, 100].forEach(v => {
+        svg.append("text").attr("x",pxS(v)).attr("y",cy1-padB+14).attr("text-anchor","middle")
+          .attr("font-size",9).attr("fill",MZblack).text(v);
+      });
+
+      // Y axis label on first column
+      if(ci === 0){
+        svg.append("text").attr("x",cx0+6).attr("y",(cy0+20+cy1-padB)/2)
+          .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack)
+          .attr("transform",`rotate(-90,${cx0+6},${(cy0+20+cy1-padB)/2})`).text(row.yLabel);
+      }
+
+      // X axis label on bottom row
+      if(row.rowIdx === 1){
+        svg.append("text").attr("x",cx0+cW/2).attr("y",cy1-2).attr("text-anchor","middle")
+          .attr("font-size",9).attr("fill",MZblack).text("PCA dimensions");
+      }
+
+      // Draw curves
+      const peaks = cm[row.peakKey];
+
+      dsColors.forEach((ds, di) => {
+        const peak = peaks[di];
+
+        // Dashed full-dimension line
+        svg.append("line")
+          .attr("x1",cx0+padL).attr("y1",pyS(peak))
+          .attr("x2",cx0+cW-5).attr("y2",pyS(peak))
+          .attr("stroke",ds.color).attr("stroke-width",1)
+          .attr("stroke-dasharray","4,3").attr("opacity",0.4);
+
+        // Curve
+        const kVals = [3, 4, 5, 7, 10, 15, 20, 30, 50, 80, 120, 200];
+        const pts = kVals.map(k => {
+          const t = Math.log(k) / Math.log(200);
+          const val = peak * (1 / (1 + Math.exp(-row.riseSpeed*(t - row.riseMid))));
+          return [pxS(k), pyS(val)];
+        });
+
+        svg.append("path").attr("d",lineFn(pts))
+          .attr("fill","none").attr("stroke",ds.color).attr("stroke-width",2);
+      });
+    });
+  });
+
+  // Legend — single row below all charts
+  const legY = 35 + 2 * (cH + cGapY) + 12;
+  const legX = startX + 20;
+
+  dsColors.forEach((ds, i) => {
+    const x = legX + i * 140;
+    svg.append("line").attr("x1",x).attr("y1",legY).attr("x2",x+18).attr("y2",legY)
+      .attr("stroke",ds.color).attr("stroke-width",2.5);
+    svg.append("text").attr("x",x+22).attr("y",legY+1)
+      .attr("dominant-baseline","middle").attr("font-size",10).attr("fill",MZblack).text(ds.label);
+  });
+
+  const fdX = legX + dsColors.length * 140;
+  svg.append("line").attr("x1",fdX).attr("y1",legY).attr("x2",fdX+18).attr("y2",legY)
+    .attr("stroke",MZblack).attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
+  svg.append("text").attr("x",fdX+22).attr("y",legY+1)
+    .attr("dominant-baseline","middle").attr("font-size",10).attr("fill",MZblack).text("full dimension");
+
+  return svg.node();
+}
+```
+
+:::
+::: {.column width="45%"}
+
+**Key finding:**
+
+- Spearman rank correlation rises **rapidly** with just ~10 PCA components
+- $R^2$ needs more dimensions to converge (~100+)
+- The **gap** between rank correlation and $R^2$ suggests:
+  - The model **does** explicitly represent space/time (appears in top PCA components)
+  - But the probe needs extra parameters to convert from the **model's** coordinate system to **human** coordinates (lat/lon, years)
+
+
+The model has its own internal "coordinate system" for space and time — it's just not aligned with our latitude/longitude grid.
+
+
+:::
+:::
+
+
+## Space and Time Neurons{.smaller}
+
+**Strongest evidence:** Individual neurons whose weights align with probe directions and are themselves predictive of location or time.
+
+```{ojs}
+//| echo: false
+neuronsViz = {
+  const W = 920, H = 540;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",18)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("Space and Time Neurons ");
+
+  function randn(){
+    let u=0,v=0;
+    while(!u) u=Math.random();
+    while(!v) v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+
+  const shapes = {
+    uShapeRight: (t) => {
+      const centered = t - 0.35;
+      return centered * centered * 8 - 1.5 + t * 2;
+    },
+    increasing: (t) => {
+      return -3 + t * 6;
+    },
+    increasingS: (t) => {
+      return -7.5 + 10 / (1 + Math.exp(-10*(t - 0.5)));
+    },
+    decreasing: (t) => {
+      return 3 - t * 6;
+    },
+    decreasingWide: (t) => {
+      return 4 - t * 5;
+    },
+    increasingSWide: (t) => {
+      return -4 + 8 / (1 + Math.exp(-8*(t - 0.5)));
+    },
+  };
+
+  const neurons = [
+    {title:"Absolute Latitude Neuron (7b)", xLabel:"latitude", yLabel:"projection on L20 N7573",
+     xRange:[-40,60], yRange:[-4,5], shapeFn:shapes.uShapeRight, noise:0.6, row:0, col:0,
+     types:[
+       {label:"populated", color:"#4A90D9", r:"0.85", frac:0.5},
+       {label:"structure", color:MZgold, r:"0.77", frac:0.3},
+       {label:"natural", color:"#2d8a4e", r:"0.76", frac:0.2},
+     ]},
+    {title:"US East Coast Neuron (70b)", xLabel:"longitude", yLabel:"projection on L40 N15804",
+     xRange:[-120,-70], yRange:[-6,6], shapeFn:shapes.increasing, noise:0.8, row:0, col:1,
+     types:[
+       {label:"zip", color:"#4A90D9", r:"0.88", frac:0.25},
+       {label:"college", color:MZgold, r:"0.83", frac:0.15},
+       {label:"county", color:"#2d8a4e", r:"0.82", frac:0.2},
+       {label:"structure", color:"#c0392b", r:"0.79", frac:0.2},
+       {label:"city", color:"#8e44ad", r:"0.77", frac:0.2},
+     ]},
+    {title:"Post-2000s Art Neuron (70b)", xLabel:"release date", yLabel:"projection on L43 N9177",
+     xRange:[1950,2020], yRange:[-12.5,3], shapeFn:shapes.increasingS, noise:1.0, row:0, col:2,
+     types:[
+       {label:"song", color:"#4A90D9", r:"0.82", frac:0.5},
+       {label:"book", color:MZgold, r:"0.71", frac:0.25},
+       {label:"movie", color:"#2d8a4e", r:"0.70", frac:0.25},
+     ]},
+    {title:"Negative Latitude Neuron (13b)", xLabel:"latitude", yLabel:"projection on L28 N4341",
+     xRange:[-40,60], yRange:[-5,6], shapeFn:shapes.decreasing, noise:0.7, row:1, col:0,
+     types:[
+       {label:"populated", color:"#4A90D9", r:"-0.83", frac:0.5},
+       {label:"structure", color:MZgold, r:"-0.71", frac:0.3},
+       {label:"natural", color:"#2d8a4e", r:"-0.68", frac:0.2},
+     ]},
+    {title:"Historical Figure Neuron (7b)", xLabel:"death year", yLabel:"projection on L10 N3254",
+     xRange:[500,2000], yRange:[-2,10], shapeFn:shapes.decreasingWide, noise:2.0, row:1, col:1,
+     types:[
+       {label:"artist", color:"#4A90D9", r:"-0.77", frac:0.25},
+       {label:"politician", color:MZgold, r:"-0.72", frac:0.25},
+       {label:"military", color:"#2d8a4e", r:"-0.72", frac:0.2},
+       {label:"researcher", color:"#c0392b", r:"-0.71", frac:0.15},
+       {label:"other", color:"#8e44ad", r:"-0.70", frac:0.15},
+     ]},
+    {title:"Trump Era Neuron (70b)", xLabel:"publication date", yLabel:"projection on L43 N9177",
+     xRange:[2010,2020], yRange:[-7,13], shapeFn:shapes.increasingSWide, noise:2.5, row:1, col:2,
+     types:[
+       {label:"National", color:"#4A90D9", r:"0.79", frac:0.5},
+       {label:"Foreign", color:MZgold, r:"0.70", frac:0.5},
+     ]},
+  ];
+
+  const cW = 275, cH = 210, cGapX = 20, cGapY = 25;
+  const startX = 35, startY = 28;
+  const nPtsPerType = 100;
+
+  const allScatterDots = [];
+
+  neurons.forEach(n => {
+    const cx0 = startX + n.col * (cW + cGapX);
+    const cy0 = startY + n.row * (cH + cGapY);
+    const cy1 = cy0 + cH;
+    const padL = 42, padB = 24;
+
+    const pxS = d3.scaleLinear().domain(n.xRange).range([cx0+padL, cx0+cW-5]);
+    const pyS = d3.scaleLinear().domain(n.yRange).range([cy1-padB, cy0+22]);
+
+    // Axes
+    svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx0+cW-5).attr("y2",cy1-padB)
+      .attr("stroke","#ccc").attr("stroke-width",0.5);
+    svg.append("line").attr("x1",cx0+padL).attr("y1",cy1-padB).attr("x2",cx0+padL).attr("y2",cy0+22)
+      .attr("stroke","#ccc").attr("stroke-width",0.5);
+
+    // X axis tick values
+    const xTicks = 5;
+    for(let ti=0; ti<=xTicks; ti++){
+      const val = n.xRange[0] + ti * (n.xRange[1] - n.xRange[0]) / xTicks;
+      const xp = pxS(val);
+      svg.append("line").attr("x1",xp).attr("y1",cy1-padB).attr("x2",xp).attr("y2",cy1-padB+3)
+        .attr("stroke","#ccc").attr("stroke-width",0.5);
+      svg.append("text").attr("x",xp).attr("y",cy1-padB+11).attr("text-anchor","middle")
+        .attr("font-size",6).attr("fill",MZblack).text(Math.round(val));
+    }
+
+    // Y axis tick values
+    const yTicks = 4;
+    for(let ti=0; ti<=yTicks; ti++){
+      const val = n.yRange[0] + ti * (n.yRange[1] - n.yRange[0]) / yTicks;
+      const yp = pyS(val);
+      svg.append("line").attr("x1",cx0+padL-3).attr("y1",yp).attr("x2",cx0+padL).attr("y2",yp)
+        .attr("stroke","#ccc").attr("stroke-width",0.5);
+      svg.append("text").attr("x",cx0+padL-5).attr("y",yp+1).attr("text-anchor","end")
+        .attr("dominant-baseline","middle").attr("font-size",6).attr("fill",MZblack)
+        .text(val.toFixed(0));
+    }
+
+    // Title
+    svg.append("text").attr("x",cx0+cW/2).attr("y",cy0+14).attr("text-anchor","middle")
+      .attr("font-size",8).attr("fill",MZblack).attr("font-weight",700).text(n.title);
+
+    // X label
+    svg.append("text").attr("x",cx0+cW/2).attr("y",cy1-2).attr("text-anchor","middle")
+      .attr("font-size",8).attr("fill",MZblack).text(n.xLabel);
+
+    // Y label
+    svg.append("text").attr("x",cx0+8).attr("y",(cy0+22+cy1-padB)/2).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZblack)
+      .attr("transform",`rotate(-90,${cx0+8},${(cy0+22+cy1-padB)/2})`).text(n.yLabel);
+
+    // Trend line following the shape function
+    const trendPts = 50;
+    const lineFn = d3.line().curve(d3.curveBasis);
+    const trendData = d3.range(trendPts).map(i => {
+      const t = i / (trendPts - 1);
+      const xVal = n.xRange[0] + t * (n.xRange[1] - n.xRange[0]);
+      const yVal = n.shapeFn(t);
+      return [pxS(xVal), pyS(yVal)];
+    });
+    svg.append("path").attr("d",lineFn(trendData))
+      .attr("fill","none").attr("stroke",MZblack).attr("stroke-width",1.2).attr("opacity",0.35);
+
+    // Legend with entity types and correlations
+    const legX = cx0 + padL + 4, legY0 = cy0 + 22;
+
+    n.types.forEach((tp, ti) => {
+      const ly = legY0 + ti * 11;
+      svg.append("circle").attr("cx",legX+4).attr("cy",ly).attr("r",3)
+        .attr("fill",tp.color).attr("opacity",0.7);
+      svg.append("text").attr("x",legX+10).attr("y",ly+1)
+        .attr("dominant-baseline","middle").attr("font-size",6).attr("fill",MZblack)
+        .text(tp.label + " (r=" + tp.r + ")");
+    });
+
+    // Scatter points colored by type, following the shape function
+    const dotsForNeuron = [];
+    n.types.forEach(tp => {
+      const count = Math.floor(nPtsPerType * tp.frac);
+      for(let i=0;i<count;i++){
+        const t = Math.random();
+        const xVal = n.xRange[0] + t * (n.xRange[1] - n.xRange[0]);
+        const yBase = n.shapeFn(t);
+        const yVal = yBase + randn() * n.noise;
+        const px2 = pxS(xVal), py2 = pyS(yVal);
+        if(py2 > cy0+22 && py2 < cy1-padB && px2 > cx0+padL && px2 < cx0+cW-5){
+          const dot = svg.append("circle").attr("cx",px2).attr("cy",py2).attr("r",1.8)
+            .attr("fill",tp.color).attr("opacity",0);
+          dotsForNeuron.push(dot);
+        }
+      }
+    });
+    allScatterDots.push(dotsForNeuron);
+  });
+
+  // Animate: dots appear progressively
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 200;
+    const t = (frame % period) / period;
+
+    allScatterDots.forEach(dotsArr => {
+      const visible = Math.floor(t * dotsArr.length);
+      dotsArr.forEach((dot, i) => {
+        dot.attr("opacity", i < visible ? 0.45 : 0);
+      });
+    });
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  svg.append("text").attr("x",W/2).attr("y",H-6).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray)
+    .text("Individual neurons encode real-world coordinates — unified across entity types. No supervision other than next-token prediction.");
+
+  return svg.node();
+}
+```
+
+These neurons received **no supervision** other than next-token prediction — yet they encode geographic and temporal coordinates. This is strong evidence the model **genuinely uses** spatial and temporal features.
+
+
+## Neuron Interventions {.smaller}
+
+**Causal test:** If we manually change a time neuron's activation, does the model's prediction change accordingly?
+
+::: {.columns}
+::: {.column width="55%"}
+
+```{ojs}
+//| echo: false
+interventionViz = {
+  const W = 500, H = 320;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const sliderInput = Inputs.range([-4, 4], {
+    label: " Pin neuron activation",
+    step: 0.1,
+    value: 0
+  });
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Pinning Time Neuron → Prediction Shifts");
+
+  svg.append("text").attr("x",W/2).attr("y",42)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray).attr("font-style","italic")
+    .text('"Blackbird by the Beatles was written in 19__"');
+
+  // Prediction label — large, at top, always visible
+  const predLabel = svg.append("text")
+    .attr("x",W/2).attr("y",62)
+    .attr("text-anchor","middle").attr("font-size",18).attr("fill",MZgold).attr("font-weight",800);
+
+  // Probability bar — horizontal, below prediction label
+  const barY = 70, barH = 10;
+  const decades = ["50s","60s","70s","80s","90s"];
+  const centers = [-3, -1.5, 0, 1.5, 3];
+  const colors = [MZblack, "#555", MZdkGold, MZgold, "#E8D48A"];
+
+  const barEls = decades.map((dec,di) => {
+    return svg.append("rect").attr("y",barY).attr("height",barH).attr("rx",2)
+      .attr("fill",colors[di]);
+  });
+  const barLabels = decades.map((dec,di) => {
+    return svg.append("text").attr("y",barY+barH+10)
+      .attr("text-anchor","middle").attr("font-size",7).attr("fill",colors[di]).attr("font-weight",600);
+  });
+
+  // Chart area
+  const chartTop = 95, chartBot = H-35;
+  const chartLeft = 80, chartRight = W-30;
+
+  const pxS = d3.scaleLinear().domain([-4,4]).range([chartLeft, chartRight]);
+  const pyS = d3.scaleLinear().domain([0,1]).range([chartBot, chartTop]);
+
+  // Axes
+  svg.append("line").attr("x1",chartLeft).attr("y1",chartBot).attr("x2",chartRight).attr("y2",chartBot).attr("stroke",MZgray);
+  svg.append("line").attr("x1",chartLeft).attr("y1",chartBot).attr("x2",chartLeft).attr("y2",chartTop).attr("stroke",MZgray);
+  svg.append("text").attr("x",W/2).attr("y",H-10).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZblack).text("Neuron activation (pinned value) →");
+  svg.append("text").attr("x",45).attr("y",(chartTop+chartBot)/2).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,45,${(chartTop+chartBot)/2})`).text("P(decade)");
+
+  // X axis ticks
+  [-4,-3,-2,-1,0,1,2,3,4].forEach(v => {
+    svg.append("text").attr("x",pxS(v)).attr("y",chartBot+12).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZblack).text(v);
+  });
+
+  // Y axis ticks
+  [0,0.2,0.4,0.6,0.8].forEach(v => {
+    svg.append("text").attr("x",chartLeft-6).attr("y",pyS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",7).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  // Draw static curves
+  const lineFn = d3.line().curve(d3.curveBasis);
+  decades.forEach((dec,di) => {
+    const nPts = 50;
+    const pts = d3.range(nPts).map(i => {
+      const x = -4 + 8*i/(nPts-1);
+      const prob = 0.8*Math.exp(-0.8*(x-centers[di])*(x-centers[di]));
+      return [pxS(x), pyS(prob)];
+    });
+    svg.append("path").attr("d",lineFn(pts))
+      .attr("fill","none").attr("stroke",colors[di]).attr("stroke-width",2);
+
+    // Label at peak
+    svg.append("text").attr("x",pxS(centers[di])).attr("y",pyS(0.85)-6)
+      .attr("text-anchor","middle").attr("font-size",9).attr("fill",colors[di])
+      .attr("font-weight",700).text("19"+dec);
+  });
+
+  // Vertical indicator line (moves with slider)
+  const indicator = svg.append("line")
+    .attr("y1",chartTop).attr("y2",chartBot)
+    .attr("stroke",MZgold).attr("stroke-width",2.5).attr("stroke-dasharray","4,2");
+
+  function update(){
+    const pinVal = sliderInput.value;
+
+    indicator.attr("x1",pxS(pinVal)).attr("x2",pxS(pinVal));
+
+    // Compute probabilities at this pin value
+    const rawProbs = centers.map(c => Math.exp(-0.8*(pinVal-c)*(pinVal-c)));
+    const sumP = rawProbs.reduce((a,b) => a+b, 0);
+    const probs = rawProbs.map(p => p/sumP);
+
+    // Find winner
+    const maxIdx = probs.indexOf(Math.max(...probs));
+    const winnerColor = colors[maxIdx];
+    predLabel.text("Model predicts: 19" + decades[maxIdx])
+      .attr("fill", winnerColor === MZblack || winnerColor === "#555" ? MZblack : winnerColor);
+
+    // Update probability bar
+    const totalBarW = 300;
+    let bx = (W - totalBarW) / 2;
+    probs.forEach((p,i) => {
+      const w = p * totalBarW;
+      barEls[i].attr("x",bx).attr("width",w);
+      barLabels[i].attr("x",bx+w/2).text(p > 0.08 ? decades[i] + " " + (p*100).toFixed(0)+"%" : "");
+      bx += w;
+    });
+
+    requestAnimationFrame(update);
+  }
+  update();
+
+  return html`<div style="display:grid; gap:8px; max-width:${W}px;">
+    ${sliderInput}
+    ${svg.node()}
+  </div>`;
+}
+```
+
+:::
+::: {.column width="45%"}
+
+**Experiment:** For prompts like *"[song] by [artist] was written in 19__"*, pin a single time neuron (L19.3610 in 7B) to different values and watch how the predicted next token changes.
+
+**Result:** Sweeping the neuron's activation smoothly shifts the predicted decade from the 1950s to the 1990s. Compare with 9 random neurons in the same layer — none show this effect.
+
+
+This is **causal** evidence — not just correlation. The model actively uses this neuron for temporal reasoning. Ablating it increases loss specifically on time-related tokens.
+
+
+:::
+:::
+
+
+## Neuron Ablation Evidence {.smaller}
+
+**Further causal test:** Zero out individual space/time neurons, measure which contexts suffer the most loss increase.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Ablating a space neuron (L20.7573):**
+
+Top affected contexts involve geographic content — climate classifications, temperature data, coordinates. The model specifically needs this neuron when processing spatial information.
+
+**Ablating a time neuron (L18.9387):**
+
+Top affected contexts involve temporal content — song release dates, album singles, publication years. Loss increases most on tokens that require knowing *when* something happened.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+ablationViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Ablation: Where Loss Increases Most");
+
+  // Space neuron ablation
+  const spaceContexts = [
+    {ctx:"Köppen climate Aw", loss:2.11},
+    {ctx:"tropical monsoon Am", loss:2.04},
+    {ctx:"dry season in March", loss:1.96},
+    {ctx:"temperature in January", loss:1.93},
+  ];
+
+  // Time neuron ablation
+  const timeContexts = [
+    {ctx:"fourth single from album", loss:2.25},
+    {ctx:"second single from her", loss:1.97},
+    {ctx:"third single from album", loss:1.75},
+    {ctx:"Shania Twain's...", loss:1.57},
+  ];
+
+  const bx0 = 160, bx1 = W-20;
+  const xS = d3.scaleLinear().domain([0,2.5]).range([bx0, bx1]);
+
+  // Space section
+  svg.append("text").attr("x",20).attr("y",56).attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("🌍 Space neuron");
+
+  spaceContexts.forEach((c,i) => {
+    const y = 72 + i*28;
+    const w = xS(c.loss) - bx0;
+    svg.append("rect").attr("x",bx0).attr("y",y-8).attr("width",w).attr("height",18).attr("rx",3)
+      .attr("fill",MZgold).attr("opacity",0.7);
+    svg.append("text").attr("x",bx0-6).attr("y",y+2).attr("text-anchor","end")
+      .attr("font-size",8).attr("fill",MZgray).text(c.ctx);
+    svg.append("text").attr("x",bx0+w+4).attr("y",y+2)
+      .attr("font-size",8).attr("fill",MZdkGold).attr("font-weight",600).text("+"+c.loss.toFixed(2));
+  });
+
+  // Time section
+  svg.append("text").attr("x",20).attr("y",200).attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("⏰ Time neuron");
+
+  timeContexts.forEach((c,i) => {
+    const y = 216 + i*28;
+    const w = xS(c.loss) - bx0;
+    svg.append("rect").attr("x",bx0).attr("y",y-8).attr("width",w).attr("height",18).attr("rx",3)
+      .attr("fill",MZblack).attr("opacity",0.7);
+    svg.append("text").attr("x",bx0-6).attr("y",y+2).attr("text-anchor","end")
+      .attr("font-size",8).attr("fill",MZgray).text(c.ctx);
+    svg.append("text").attr("x",bx0+w+4).attr("y",y+2)
+      .attr("font-size",8).attr("fill",MZblack).attr("font-weight",600).text("+"+c.loss.toFixed(2));
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",H-8).attr("text-anchor","middle")
+    .attr("font-size",8).attr("fill",MZgray).text("Loss increase when neuron is zeroed out →");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Key Takeaways — Gurnee & Tegmark {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**What they showed:**
+
+- LLMs learn **linear representations** of space and time at multiple scales
+- These representations are **robust** to prompting and **unified** across entity types
+- Individual **space/time neurons** exist and causally influence predictions
+- Larger models + more training data → better representations
+
+**What this means:**
+
+LLMs don't just learn surface correlations — they build structured internal models with genuine spatial and temporal geometry. These are basic ingredients of a **world model**.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+takeawayViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Evidence Hierarchy");
+
+  const levels = [
+    {y:55, label:"Probes recover coordinates", strength:"Suggestive", w:320},
+    {y:100, label:"Linear probes ≈ nonlinear", strength:"Linear structure", w:280},
+    {y:145, label:"Generalizes across entities", strength:"Unified repr.", w:240},
+    {y:190, label:"Individual neurons found", strength:"Localized", w:200},
+    {y:235, label:"Interventions shift predictions", strength:"Causal", w:160},
+  ];
+
+  levels.forEach((l,i) => {
+    const x = W/2 - l.w/2;
+    const t = i / (levels.length-1);
+    const fill = d3.interpolateRgb(MZblack, MZgold)(t);
+
+    svg.append("rect").attr("x",x).attr("y",l.y-14).attr("width",l.w).attr("height",28).attr("rx",5)
+      .attr("fill",fill).attr("opacity",0.85);
+    svg.append("text").attr("x",W/2).attr("y",l.y-1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", t < 0.5 ? MZgold : MZblack).attr("font-size",9).attr("font-weight",600)
+      .text(l.label);
+    svg.append("text").attr("x",W/2+l.w/2+8).attr("y",l.y)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZgray)
+      .text(l.strength);
+  });
+
+  // Arrow on the left
+  svg.append("text").attr("x",30).attr("y",(55+235)/2)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
+    .attr("transform",`rotate(-90,30,${(55+235)/2})`).text("Strength of evidence →");
+
+  svg.append("text").attr("x",W/2).attr("y",280)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).attr("font-weight",600)
+    .text("Open questions:");
+  svg.append("text").attr("x",W/2).attr("y",298)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("How are these learned? Used for inference?");
+  svg.append("text").attr("x",W/2).attr("y",314)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("Part of a larger causal world model?");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
 
 
 ##  {data-background-image="assets/tigerstripes.png" data-background-size="cover" data-background-position="center"}

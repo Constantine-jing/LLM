@@ -462,6 +462,10 @@
   object-fit: contain;
 }
 
+.reveal .slides section.smaller ul li,
+.reveal .slides section.smaller ol li {
+  font-size: 0.75em;
+}
 
 
 /* =========================================================
